@@ -139,46 +139,52 @@ const App: React.FC = () => {
         {
           id: 'welcome',
           role: 'assistant',
-          content: `PROJECT INITIALIZED: ${(context.projectName || context.goal).toUpperCase()}\n\nAudience: ${context.audience}\nUser Needs: ${context.needs}\nVibe: "${context.vibes}"\n\nThe canvas is ready. Use the Red Pen to sketch ideas, or ask me to visualize concepts.`,
+          content: `PROJECT INITIALIZED: ${(context.projectName || context.roomType).toUpperCase()}\n\nRoom Type: ${context.roomType}\nExisting Furniture: ${context.existingFurniture}\nChanges: ${context.desiredChanges}\nVibe: "${context.vibes}"\n\nThe canvas is ready. Use the Red Pen to sketch ideas, or ask me to visualize concepts.`,
           timestamp: Date.now()
         }
       ]);
       
-      // Auto-populate with inspo from onboarding
-      if (context.inspo.length > 0) {
+      // Auto-populate with room photos from onboarding
+      if (context.roomPhotos.length > 0) {
           const loadImages = async () => {
               const newElements: CanvasElement[] = [];
-              const width = 300; 
-
-              for (let idx = 0; idx < context.inspo.length; idx++) {
-                  const url = context.inspo[idx];
+              let currentX = 100;
+              const y = 100;
+              
+              for (let idx = 0; idx < context.roomPhotos.length; idx++) {
+                  const url = context.roomPhotos[idx];
+                  
                   try {
                       await new Promise<void>((resolve) => {
                           const img = new Image();
                           img.src = url;
                           img.onload = () => {
                               const aspect = img.width / img.height;
+                              const w = 300;
+                              const h = 300 / aspect;
                               newElements.push({
-                                  id: `inspo-${idx}`,
+                                  id: `photo-${idx}`,
                                   type: 'image',
-                                  x: 100 + (idx * 320),
-                                  y: 100,
-                                  width: width,
-                                  height: width / aspect, 
+                                  x: currentX,
+                                  y: y,
+                                  width: w,
+                                  height: h, 
                                   src: url
                               });
+                              currentX += w + 20;
                               resolve();
                           };
                           img.onerror = () => {
                               newElements.push({
-                                  id: `inspo-${idx}`,
+                                  id: `photo-${idx}`,
                                   type: 'image',
-                                  x: 100 + (idx * 320),
-                                  y: 100,
+                                  x: currentX,
+                                  y: y,
                                   width: 300,
                                   height: 300,
                                   src: url
                               });
+                              currentX += 320;
                               resolve();
                           }
                       });

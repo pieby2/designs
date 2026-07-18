@@ -2,7 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
-import OpenAI from 'openai';
+import { GoogleGenAI, Type, ThinkingLevel } from '@google/genai';
 import { SYSTEM_INSTRUCTION } from './constants.js';
 
 const app = express();
@@ -12,14 +12,19 @@ const PORT = process.env.PORT || 3001;
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ limit: '100mb', extended: true }));
 
-const getClient = () => {
-  const apiKey = process.env.XAI_API_KEY || process.env.API_KEY;
+const getClient = (apiVersion = 'v1alpha') => {
+  const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
   if (!apiKey) {
-    throw new Error("XAI_API_KEY or API_KEY is not set in environment");
+    throw new Error("GEMINI_API_KEY or API_KEY is not set in environment");
   }
-  return new OpenAI({ 
+  return new GoogleGenAI({ 
     apiKey, 
-    baseURL: 'https://api.x.ai/v1'
+    apiVersion,
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      }
+    }
   });
 };
 
@@ -27,61 +32,64 @@ const getClient = () => {
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 const generateImageTool = {
-  type: "function" as const,
-  function: {
-    name: "generate_image",
-    description: "Generates or edits an image. YOU MUST provide a design analysis in the 'analysis' parameter.",
-    parameters: {
-      type: "object",
-      properties: {
-        analysis: {
-          type: "string",
-          description: "The strategic design reasoning. Explain WHY you chose this lighting, composition, and style. Connect it to the Project Goal, Audience, and Vibe.",
-        },
-        prompt: {
-          type: "string",
-          description: "A highly detailed, technical description of the image to generate, including lighting, style, camera angle, and composition.",
-        },
-        mode: {
-          type: "string",
-          enum: ["GENERATE_NEW", "EDIT_EXISTING"],
-          description: "GENERATE_NEW for fresh ideas (ignores canvas). EDIT_EXISTING to modify the current canvas (uses canvas as reference).",
-        },
-        aspectRatio: {
-          type: "string",
-          description: "The aspect ratio of the image. Options: '1:1', '16:9', '9:16', '4:3'. Default is '1:1'.",
-        }
+  name: "generate_image",
+  description: "Generates or edits an image. YOU MUST provide a design analysis in the 'analysis' parameter.",
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      analysis: {
+        type: Type.STRING,
+        description: "The strategic design reasoning. Explain WHY you chose this lighting, composition, and style. Connect it to the Project Goal, Audience, and Vibe.",
       },
-      required: ["analysis", "prompt", "mode"],
-    }
-  }
+      prompt: {
+        type: Type.STRING,
+        description: "A highly detailed, technical description of the image to generate, including lighting, style, camera angle, and composition.",
+      },
+      mode: {
+        type: Type.STRING,
+        enum: ["GENERATE_NEW", "EDIT_EXISTING"],
+        description: "GENERATE_NEW for fresh ideas (ignores canvas). EDIT_EXISTING to modify the current canvas (uses canvas as reference).",
+      },
+      aspectRatio: {
+        type: Type.STRING,
+        description: "The aspect ratio of the image. Options: '1:1', '16:9', '9:16', '4:3'. Default is '1:1'.",
+      }
+    },
+    required: ["analysis", "prompt", "mode"],
+  },
 };
 
-const agentTools = [generateImageTool];
+const agentTools = [
+  { functionDeclarations: [generateImageTool] },
+];
 
 // --- API Endpoints ---
 
 app.post('/api/suggest-vibes', async (req, res) => {
-  const { goal, audience, needs } = req.body;
-  if (!goal || !audience || !needs) {
-    return res.status(400).json({ error: "Missing required parameters: goal, audience, needs" });
+  const { roomType, existingFurniture, desiredChanges } = req.body;
+  if (!roomType) {
+    return res.status(400).json({ error: "Missing required parameters: roomType" });
   }
 
   const prompt = `
-    Context: We are designing a "${goal}" for "${audience}" who need "${needs}".
+    Context: We are designing a "${roomType}".
+    Existing Furniture: "${existingFurniture}".
+    Desired Changes: "${desiredChanges}".
     Task: In 3-6 words, describe the emotional "vibe" or feeling this design should evoke.
-    Examples: "Energetic and rebellious", "Calm, trusted, and secure", "Playful yet sophisticated".
+    Examples: "Cozy and warm rustic", "Clean modern minimalist", "Bright airy bohemian".
     Return ONLY the phrase, do not include quotes.
   `;
 
   try {
     const ai = getClient();
-    const response = await ai.chat.completions.create({
-      model: "grok-2-latest", 
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 1.0 
+    const response = await ai.models.generateContent({
+      model: "gemini-3.5-flash", 
+      contents: { parts: [{ text: prompt }] },
+      config: { 
+        temperature: 1.0 
+      }
     });
-    res.json({ vibes: response.choices[0]?.message?.content?.trim() || "" });
+    res.json({ vibes: response.text?.trim() || "" });
   } catch (e: any) {
     console.error("Vibe suggestion failed", e);
     res.status(500).json({ error: e.message || "Failed to suggest vibes" });
@@ -102,26 +110,29 @@ app.post('/api/agent-turn', async (req, res) => {
       ${SYSTEM_INSTRUCTION}
 
       PROJECT CONTEXT:
-      Goal: ${context.goal}
-      Audience: ${context.audience}
-      Needs: ${context.needs}
+      Room Type: ${context.roomType}
+      Existing Furniture: ${context.existingFurniture}
+      Desired Changes: ${context.desiredChanges}
       Vibe: ${context.vibes}
     `;
 
     // Construct Structured Content History
-    const messages: any[] = [
-      { role: "system", content: extendedSystemInstruction }
-    ];
-
-    (history || []).forEach((msg: any) => {
-      messages.push({
-          role: msg.role === 'user' ? 'user' : 'assistant',
-          content: msg.content
-      });
+    const contents: any[] = (history || []).map((msg: any) => {
+      const part: any = { text: msg.content };
+      if (msg.role === 'assistant' && msg.thoughtSignature) {
+          part.thoughtSignature = msg.thoughtSignature;
+      }
+      return {
+          role: msg.role === 'user' ? 'user' : 'model',
+          parts: [part]
+      };
     });
 
+    // Helper to clean base64 string
+    const cleanBase64 = (b64: string) => b64.replace(/^data:image\/(png|jpeg|jpg|webp);base64,/, '');
+
     // Append Current Turn
-    const currentTurnContent: any[] = [];
+    const currentTurnParts: any[] = [];
 
     // Inject Stickers
     (stickerContext || []).forEach((sticker: any, index: number) => {
@@ -135,22 +146,22 @@ app.post('/api/agent-turn', async (req, res) => {
         }
         instruction += "\n(See image below):";
         
-        currentTurnContent.push({ type: "text", text: instruction });
-        currentTurnContent.push({
-            type: "image_url",
-            image_url: { url: `data:image/png;base64,${sticker.base64}` }
+        currentTurnParts.push({ text: instruction });
+        currentTurnParts.push({
+            inlineData: { mimeType: "image/png", data: cleanBase64(sticker.base64) },
+            mediaResolution: { level: "media_resolution_high" }
         });
     });
 
-    currentTurnContent.push({ type: "text", text: userMessage });
-    currentTurnContent.push({ 
-      type: "image_url",
-      image_url: { url: `data:image/png;base64,${canvasBase64}` }
+    currentTurnParts.push({ text: userMessage });
+    currentTurnParts.push({ 
+      inlineData: { mimeType: "image/png", data: cleanBase64(canvasBase64) },
+      mediaResolution: { level: "media_resolution_high" }
     });
 
-    messages.push({
+    contents.push({
         role: 'user',
-        content: currentTurnContent
+        parts: currentTurnParts
     });
 
     let attempt = 0;
@@ -158,37 +169,36 @@ app.post('/api/agent-turn', async (req, res) => {
 
     while (true) {
       try {
-        const response = await ai.chat.completions.create({
-          model: "grok-2-latest", 
-          messages: messages,
-          tools: agentTools,
-          temperature: 1.0, 
+        const response = await ai.models.generateContent({
+          model: "gemini-3.5-flash", 
+          contents: contents,
+          config: {
+              systemInstruction: extendedSystemInstruction,
+              tools: agentTools,
+              temperature: 1.0, 
+          },
         });
 
-        const message = response.choices[0]?.message;
-        let parsedText = message?.content || "";
-        let thoughtSignature = "";
+        const responseParts = response.candidates?.[0]?.content?.parts || [];
+
+        const textPart = responseParts.find(p => p.text);
+        const text = textPart?.text || "";
         
-        if (parsedText.includes("<think>")) {
-           const match = parsedText.match(/<think>([\s\S]*?)<\/think>/);
-           if (match) {
-             thoughtSignature = match[1].trim();
-             parsedText = parsedText.replace(/<think>[\s\S]*?<\/think>/, "").trim();
-           }
-        }
+        const thoughtSignature = responseParts.find(p => p.thoughtSignature)?.thoughtSignature;
 
-        const toolCalls = message?.tool_calls?.map((tc: any) => {
-           let args = {};
-           try { args = JSON.parse(tc.function.arguments); } catch (e) {}
-           return {
-             name: tc.function.name,
-             args: args
-           };
-        }) || [];
+        const toolCalls = response.functionCalls?.map(fc => ({
+          name: fc.name || "",
+          args: fc.args
+        })) || [];
 
-        const sourceUrls: any[] = []; // No native grounding metadata in Grok API yet
+        const sourceUrls: { title: string; uri: string }[] = [];
+        response.candidates?.[0]?.groundingMetadata?.groundingChunks?.forEach((chunk: any) => {
+          if (chunk.web?.uri && chunk.web?.title) {
+              sourceUrls.push({ title: chunk.web.title, uri: chunk.web.uri });
+          }
+        });
 
-        return res.json({ text: parsedText, toolCalls, sourceUrls, thoughtSignature });
+        return res.json({ text, toolCalls, sourceUrls, thoughtSignature });
 
       } catch (error: any) {
         attempt++;
@@ -200,7 +210,7 @@ app.post('/api/agent-turn', async (req, res) => {
 
         if (isOverloaded && attempt <= maxRetries) {
           const delayMs = Math.pow(2, attempt) * 1000;
-          console.warn(`Grok overloaded (503). Retrying in ${delayMs}ms...`);
+          console.warn(`Gemini 3 Pro overloaded (503). Retrying in ${delayMs}ms...`);
           await wait(delayMs);
           continue;
         }
@@ -221,25 +231,24 @@ app.post('/api/generate-artifact', async (req, res) => {
   }
 
   try {
-    const ai = getClient();
+    // Use Pollinations.ai for free image generation (no API key needed)
+    const encodedPrompt = encodeURIComponent(technicalPrompt);
+    const seed = Math.floor(Math.random() * 2147483647); // Keep seed within int32 range
+    const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true&seed=${seed}`;
     
-    console.log(`Generating image with grok-imagine-image-quality...`);
+    console.log(`Fetching image from Pollinations.ai (seed: ${seed})...`);
+    const imageResponse = await fetch(imageUrl, { redirect: 'follow' });
     
-    const response = await ai.images.generate({
-      model: "grok-imagine-image-quality",
-      prompt: technicalPrompt,
-      size: "1024x1024",
-      n: 1,
-      response_format: "b64_json"
-    });
-
-    const base64Image = response.data[0]?.b64_json;
-
-    if (!base64Image) {
-      throw new Error(`Grok Image API did not return a base64 image`);
+    if (!imageResponse.ok) {
+      const errorText = await imageResponse.text();
+      console.error(`Pollinations.ai error: ${imageResponse.status} - ${errorText}`);
+      throw new Error(`Pollinations.ai returned status ${imageResponse.status}`);
     }
-
-    console.log(`Image generated successfully`);
+    
+    const imageBuffer = Buffer.from(await imageResponse.arrayBuffer());
+    const base64Image = imageBuffer.toString('base64');
+    console.log(`Image generated successfully (${imageBuffer.length} bytes)`);
+    
     return res.json({ image: base64Image });
 
   } catch (e: any) {

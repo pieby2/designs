@@ -1,13 +1,13 @@
 import { ProjectContext, AgentResponse, ChatMessage, StickerType } from "../types";
 
-export const suggestVibes = async (goal: string, audience: string, needs: string): Promise<string> => {
+export const suggestVibes = async (roomType: string, existingFurniture: string, desiredChanges: string): Promise<string> => {
   try {
     const response = await fetch('/api/suggest-vibes', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ goal, audience, needs }),
+      body: JSON.stringify({ roomType, existingFurniture, desiredChanges }),
     });
 
     if (!response.ok) {

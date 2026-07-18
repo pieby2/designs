@@ -4,12 +4,11 @@ export type StickerType = 'heart' | 'cross' | 'roller' | 'cube';
 
 export interface ProjectContext {
   projectName: string;
-  goal: string;
-  audience: string;
-  needs: string; // Functional needs (Step 1)
-  vibes: string; // Emotional job (Step 2 - Auto-filled by AI)
-  inspo: string[]; // URLs or Base64
-  nonNegotiables?: string; // Optional/Implicit
+  roomPhotos: string[]; // Base64 images
+  roomType: string;
+  existingFurniture: string; // What they want to keep
+  desiredChanges: string; // Describing any changes
+  vibes: string; // Target vibe
 }
 
 export interface ChatMessage {
