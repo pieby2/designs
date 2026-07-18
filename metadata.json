@@ -1,0 +1,6 @@
+{
+  "name": "Remix: Remix: Remix: Articulate v1.3 - Hackathon",
+  "description": "A collaborative creative workspace with an autonomous AI Art Director (Gemini 3 Pro) that observes, reasons, and generates high-fidelity assets based on your sketches and context.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
