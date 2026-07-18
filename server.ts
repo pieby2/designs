@@ -2,7 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
-import { GoogleGenAI, Type, ThinkingLevel } from '@google/genai';
+import OpenAI from 'openai';
 import { SYSTEM_INSTRUCTION } from './constants.js';
 
 const app = express();
@@ -12,19 +12,14 @@ const PORT = process.env.PORT || 3001;
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ limit: '100mb', extended: true }));
 
-const getClient = (apiVersion = 'v1alpha') => {
-  const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
+const getClient = () => {
+  const apiKey = process.env.XAI_API_KEY || process.env.API_KEY;
   if (!apiKey) {
-    throw new Error("GEMINI_API_KEY or API_KEY is not set in environment");
+    throw new Error("XAI_API_KEY or API_KEY is not set in environment");
   }
-  return new GoogleGenAI({ 
+  return new OpenAI({ 
     apiKey, 
-    apiVersion,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
-      }
-    }
+    baseURL: 'https://api.x.ai/v1'
   });
 };
 
@@ -32,36 +27,37 @@ const getClient = (apiVersion = 'v1alpha') => {
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 const generateImageTool = {
-  name: "generate_image",
-  description: "Generates or edits an image. YOU MUST provide a design analysis in the 'analysis' parameter.",
-  parameters: {
-    type: Type.OBJECT,
-    properties: {
-      analysis: {
-        type: Type.STRING,
-        description: "The strategic design reasoning. Explain WHY you chose this lighting, composition, and style. Connect it to the Project Goal, Audience, and Vibe.",
+  type: "function" as const,
+  function: {
+    name: "generate_image",
+    description: "Generates or edits an image. YOU MUST provide a design analysis in the 'analysis' parameter.",
+    parameters: {
+      type: "object",
+      properties: {
+        analysis: {
+          type: "string",
+          description: "The strategic design reasoning. Explain WHY you chose this lighting, composition, and style. Connect it to the Project Goal, Audience, and Vibe.",
+        },
+        prompt: {
+          type: "string",
+          description: "A highly detailed, technical description of the image to generate, including lighting, style, camera angle, and composition.",
+        },
+        mode: {
+          type: "string",
+          enum: ["GENERATE_NEW", "EDIT_EXISTING"],
+          description: "GENERATE_NEW for fresh ideas (ignores canvas). EDIT_EXISTING to modify the current canvas (uses canvas as reference).",
+        },
+        aspectRatio: {
+          type: "string",
+          description: "The aspect ratio of the image. Options: '1:1', '16:9', '9:16', '4:3'. Default is '1:1'.",
+        }
       },
-      prompt: {
-        type: Type.STRING,
-        description: "A highly detailed, technical description of the image to generate, including lighting, style, camera angle, and composition.",
-      },
-      mode: {
-        type: Type.STRING,
-        enum: ["GENERATE_NEW", "EDIT_EXISTING"],
-        description: "GENERATE_NEW for fresh ideas (ignores canvas). EDIT_EXISTING to modify the current canvas (uses canvas as reference).",
-      },
-      aspectRatio: {
-        type: Type.STRING,
-        description: "The aspect ratio of the image. Options: '1:1', '16:9', '9:16', '4:3'. Default is '1:1'.",
-      }
-    },
-    required: ["analysis", "prompt", "mode"],
-  },
+      required: ["analysis", "prompt", "mode"],
+    }
+  }
 };
 
-const agentTools = [
-  { functionDeclarations: [generateImageTool] },
-];
+const agentTools = [generateImageTool];
 
 // --- API Endpoints ---
 
@@ -80,14 +76,12 @@ app.post('/api/suggest-vibes', async (req, res) => {
 
   try {
     const ai = getClient();
-    const response = await ai.models.generateContent({
-      model: "gemini-3.5-flash", 
-      contents: { parts: [{ text: prompt }] },
-      config: { 
-        temperature: 1.0 
-      }
+    const response = await ai.chat.completions.create({
+      model: "grok-2-latest", 
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 1.0 
     });
-    res.json({ vibes: response.text?.trim() || "" });
+    res.json({ vibes: response.choices[0]?.message?.content?.trim() || "" });
   } catch (e: any) {
     console.error("Vibe suggestion failed", e);
     res.status(500).json({ error: e.message || "Failed to suggest vibes" });
@@ -115,19 +109,19 @@ app.post('/api/agent-turn', async (req, res) => {
     `;
 
     // Construct Structured Content History
-    const contents: any[] = (history || []).map((msg: any) => {
-      const part: any = { text: msg.content };
-      if (msg.role === 'assistant' && msg.thoughtSignature) {
-          part.thoughtSignature = msg.thoughtSignature;
-      }
-      return {
-          role: msg.role === 'user' ? 'user' : 'model',
-          parts: [part]
-      };
+    const messages: any[] = [
+      { role: "system", content: extendedSystemInstruction }
+    ];
+
+    (history || []).forEach((msg: any) => {
+      messages.push({
+          role: msg.role === 'user' ? 'user' : 'assistant',
+          content: msg.content
+      });
     });
 
     // Append Current Turn
-    const currentTurnParts: any[] = [];
+    const currentTurnContent: any[] = [];
 
     // Inject Stickers
     (stickerContext || []).forEach((sticker: any, index: number) => {
@@ -141,22 +135,22 @@ app.post('/api/agent-turn', async (req, res) => {
         }
         instruction += "\n(See image below):";
         
-        currentTurnParts.push({ text: instruction });
-        currentTurnParts.push({
-            inlineData: { mimeType: "image/png", data: sticker.base64 },
-            mediaResolution: { level: "media_resolution_high" }
+        currentTurnContent.push({ type: "text", text: instruction });
+        currentTurnContent.push({
+            type: "image_url",
+            image_url: { url: `data:image/png;base64,${sticker.base64}` }
         });
     });
 
-    currentTurnParts.push({ text: userMessage });
-    currentTurnParts.push({ 
-      inlineData: { mimeType: "image/png", data: canvasBase64 },
-      mediaResolution: { level: "media_resolution_high" }
+    currentTurnContent.push({ type: "text", text: userMessage });
+    currentTurnContent.push({ 
+      type: "image_url",
+      image_url: { url: `data:image/png;base64,${canvasBase64}` }
     });
 
-    contents.push({
+    messages.push({
         role: 'user',
-        parts: currentTurnParts
+        content: currentTurnContent
     });
 
     let attempt = 0;
@@ -164,36 +158,37 @@ app.post('/api/agent-turn', async (req, res) => {
 
     while (true) {
       try {
-        const response = await ai.models.generateContent({
-          model: "gemini-3.5-flash", 
-          contents: contents,
-          config: {
-              systemInstruction: extendedSystemInstruction,
-              tools: agentTools,
-              temperature: 1.0, 
-          },
+        const response = await ai.chat.completions.create({
+          model: "grok-2-latest", 
+          messages: messages,
+          tools: agentTools,
+          temperature: 1.0, 
         });
 
-        const responseParts = response.candidates?.[0]?.content?.parts || [];
-
-        const textPart = responseParts.find(p => p.text);
-        const text = textPart?.text || "";
+        const message = response.choices[0]?.message;
+        let parsedText = message?.content || "";
+        let thoughtSignature = "";
         
-        const thoughtSignature = responseParts.find(p => p.thoughtSignature)?.thoughtSignature;
+        if (parsedText.includes("<think>")) {
+           const match = parsedText.match(/<think>([\s\S]*?)<\/think>/);
+           if (match) {
+             thoughtSignature = match[1].trim();
+             parsedText = parsedText.replace(/<think>[\s\S]*?<\/think>/, "").trim();
+           }
+        }
 
-        const toolCalls = response.functionCalls?.map(fc => ({
-          name: fc.name || "",
-          args: fc.args
-        })) || [];
+        const toolCalls = message?.tool_calls?.map((tc: any) => {
+           let args = {};
+           try { args = JSON.parse(tc.function.arguments); } catch (e) {}
+           return {
+             name: tc.function.name,
+             args: args
+           };
+        }) || [];
 
-        const sourceUrls: { title: string; uri: string }[] = [];
-        response.candidates?.[0]?.groundingMetadata?.groundingChunks?.forEach((chunk: any) => {
-          if (chunk.web?.uri && chunk.web?.title) {
-              sourceUrls.push({ title: chunk.web.title, uri: chunk.web.uri });
-          }
-        });
+        const sourceUrls: any[] = []; // No native grounding metadata in Grok API yet
 
-        return res.json({ text, toolCalls, sourceUrls, thoughtSignature });
+        return res.json({ text: parsedText, toolCalls, sourceUrls, thoughtSignature });
 
       } catch (error: any) {
         attempt++;
@@ -205,7 +200,7 @@ app.post('/api/agent-turn', async (req, res) => {
 
         if (isOverloaded && attempt <= maxRetries) {
           const delayMs = Math.pow(2, attempt) * 1000;
-          console.warn(`Gemini 3 Pro overloaded (503). Retrying in ${delayMs}ms...`);
+          console.warn(`Grok overloaded (503). Retrying in ${delayMs}ms...`);
           await wait(delayMs);
           continue;
         }
@@ -226,24 +221,25 @@ app.post('/api/generate-artifact', async (req, res) => {
   }
 
   try {
-    // Use Pollinations.ai for free image generation (no API key needed)
-    const encodedPrompt = encodeURIComponent(technicalPrompt);
-    const seed = Math.floor(Math.random() * 2147483647); // Keep seed within int32 range
-    const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true&seed=${seed}`;
+    const ai = getClient();
     
-    console.log(`Fetching image from Pollinations.ai (seed: ${seed})...`);
-    const imageResponse = await fetch(imageUrl, { redirect: 'follow' });
+    console.log(`Generating image with grok-imagine-image-quality...`);
     
-    if (!imageResponse.ok) {
-      const errorText = await imageResponse.text();
-      console.error(`Pollinations.ai error: ${imageResponse.status} - ${errorText}`);
-      throw new Error(`Pollinations.ai returned status ${imageResponse.status}`);
+    const response = await ai.images.generate({
+      model: "grok-imagine-image-quality",
+      prompt: technicalPrompt,
+      size: "1024x1024",
+      n: 1,
+      response_format: "b64_json"
+    });
+
+    const base64Image = response.data[0]?.b64_json;
+
+    if (!base64Image) {
+      throw new Error(`Grok Image API did not return a base64 image`);
     }
-    
-    const imageBuffer = Buffer.from(await imageResponse.arrayBuffer());
-    const base64Image = imageBuffer.toString('base64');
-    console.log(`Image generated successfully (${imageBuffer.length} bytes)`);
-    
+
+    console.log(`Image generated successfully`);
     return res.json({ image: base64Image });
 
   } catch (e: any) {

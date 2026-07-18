@@ -1,6 +1,6 @@
 # 🎨 The Art Director — AI Collaborative Design Workspace
 
-An AI-powered collaborative creative workspace that helps you brainstorm, iterate, and visualize product designs using **Gemini 3.5 Flash** for design reasoning and **Pollinations.ai** for free image generation.
+An AI-powered collaborative creative workspace that helps you brainstorm, iterate, and visualize product designs using **xAI's Grok** API for design reasoning and **Grok Imagine** for image generation.
 
 ---
 
@@ -9,7 +9,7 @@ An AI-powered collaborative creative workspace that helps you brainstorm, iterat
 ### Prerequisites
 
 - **Node.js** v18 or higher — [Download here](https://nodejs.org/)
-- **A Gemini API Key** (free tier works!) — [Get one here](https://aistudio.google.com/apikey)
+- **An xAI API Key** — [Get one here](https://console.x.ai/)
 
 ### 1. Clone the repo
 
@@ -36,13 +36,13 @@ cp .env.example .env
 Copy-Item .env.example .env
 ```
 
-Then open `.env` and add your Gemini API key:
+Then open `.env` and add your xAI API key:
 
 ```env
-GEMINI_API_KEY=your_api_key_here
+XAI_API_KEY=your_api_key_here
 ```
 
-> **💡 Tip:** You can get a free API key from [Google AI Studio](https://aistudio.google.com/apikey).
+> **💡 Tip:** You can get an API key from the [xAI Developer Console](https://console.x.ai/).
 
 ### 4. Run the app
 
@@ -58,8 +58,8 @@ The app will start at **http://localhost:3001** 🎉
 
 | Feature | Model / Service | What it does |
 |---|---|---|
-| **Design Reasoning** | `gemini-3.5-flash` | Suggests vibes, analyzes design briefs, and provides creative direction |
-| **Image Generation** | [Pollinations.ai](https://pollinations.ai) (free, no key needed) | Generates product design images based on AI-crafted prompts |
+| **Design Reasoning** | `grok-2-latest` | Suggests vibes, analyzes design briefs, and provides creative direction |
+| **Image Generation** | `grok-imagine-image-quality` | Generates product design images based on AI-crafted prompts |
 
 ### Flow:
 1. **Set your brief** — Describe the product, audience, and design goals
@@ -72,7 +72,7 @@ The app will start at **http://localhost:3001** 🎉
 ## 📁 Project Structure
 
 ```
-├── server.ts          # Express backend with Gemini + Pollinations.ai APIs
+├── server.ts          # Express backend with xAI (Grok) APIs
 ├── App.tsx            # Main React frontend
 ├── index.html         # Entry HTML
 ├── vite.config.ts     # Vite configuration
@@ -83,11 +83,11 @@ The app will start at **http://localhost:3001** 🎉
 
 ---
 
-## ⚠️ Free Tier Notes
+## ⚠️ API Key Notes
 
-- **Gemini 3.5 Flash** works on the free tier with generous rate limits for text generation.
-- **Image generation** uses Pollinations.ai which is **completely free** and requires **no API key**. It may occasionally be slow (10-30s) or rate-limited during high traffic.
-- If you have a **paid Gemini API key**, you can switch the image model back to `gemini-2.5-flash-image` or `gemini-3-pro-image-preview` in `server.ts` for higher quality results.
+- This app strictly uses the **xAI API** for all AI functions.
+- You must provide a valid `XAI_API_KEY` with sufficient credits for `grok-2-latest` (text/vision) and `grok-imagine-image-quality` (image generation).
+- Ensure your billing is set up at [console.x.ai](https://console.x.ai/).
 
 ---
 
