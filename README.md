@@ -40,10 +40,9 @@ Then open `.env` and add your Gemini API key:
 
 ```env
 GEMINI_API_KEY=your_api_key_here
-API_KEY=your_api_key_here
 ```
 
-> **💡 Tip:** Both variables should have the same key. You can get a free API key from [Google AI Studio](https://aistudio.google.com/apikey).
+> **💡 Tip:** You can get a free API key from [Google AI Studio](https://aistudio.google.com/apikey).
 
 ### 4. Run the app
 
