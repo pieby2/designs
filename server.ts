@@ -3,7 +3,7 @@ import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, Type, ThinkingLevel } from '@google/genai';
-import { SYSTEM_INSTRUCTION } from './constants.js';
+import { SYSTEM_INSTRUCTIONS } from './constants.js';
 import { initializeApp, applicationDefault, cert, getApps } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
@@ -463,15 +463,15 @@ const agentTools = [
 // --- API Endpoints ---
 
 app.post('/api/suggest-vibes', verifyRequestUser, async (req, res) => {
-  const { goal, audience, needs } = req.body;
-  if (!goal || !audience || !needs) {
-    return res.status(400).json({ error: "Missing required parameters: goal, audience, needs" });
+  const { roomType, existingFurniture, desiredChanges, projectType } = req.body;
+  if (!roomType) {
+    return res.status(400).json({ error: "Missing required parameters" });
   }
 
   const prompt = `
-    Context: We are designing a "${roomType}".
-    Existing Furniture: "${existingFurniture}".
-    Desired Changes: "${desiredChanges}".
+    Context: We are designing a "${roomType}" (Type: ${projectType || 'general'}).
+    Constraints / Existing: "${existingFurniture || 'None'}".
+    Desired Changes: "${desiredChanges || 'None'}".
     Task: In 3-6 words, describe the emotional "vibe" or feeling this design should evoke.
     Examples: "Cozy and warm rustic", "Clean modern minimalist", "Bright airy bohemian".
     Return ONLY the phrase, do not include quotes.
@@ -503,13 +503,16 @@ app.post('/api/agent-turn', verifyRequestUser, async (req, res) => {
     const ai = getClient();
     
     // Inject Context into System Instruction
+    const baseInstruction = SYSTEM_INSTRUCTIONS[context.projectType] || SYSTEM_INSTRUCTIONS['general'];
+    
     const extendedSystemInstruction = `
-      ${SYSTEM_INSTRUCTION}
+      ${baseInstruction}
 
       PROJECT CONTEXT:
-      Room Type: ${context.roomType}
-      Existing Furniture: ${context.existingFurniture}
-      Desired Changes: ${context.desiredChanges}
+      Project Type: ${context.projectType || 'general'}
+      Goal / Topic: ${context.roomType}
+      Constraints / Existing: ${context.existingFurniture}
+      Desired Changes / Needs: ${context.desiredChanges}
       Vibe: ${context.vibes}
     `;
 
@@ -628,18 +631,68 @@ app.post('/api/generate-artifact', verifyRequestUser, async (req, res) => {
   }
 
   try {
-    // Use Pollinations.ai for free image generation (no API key needed)
-    const encodedPrompt = encodeURIComponent(technicalPrompt);
-    const seed = Math.floor(Math.random() * 2147483647); // Keep seed within int32 range
-    const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true&seed=${seed}`;
-    
-    console.log(`Fetching image from Pollinations.ai (seed: ${seed})...`);
-    const imageResponse = await fetch(imageUrl, { redirect: 'follow' });
-    
-    if (!imageResponse.ok) {
-      const errorText = await imageResponse.text();
-      console.error(`Pollinations.ai error: ${imageResponse.status} - ${errorText}`);
-      throw new Error(`Pollinations.ai returned status ${imageResponse.status}`);
+    // Use Hugging Face Inference API
+    const hfApiKey = process.env.HF_API_KEY;
+    if (!hfApiKey) {
+      throw new Error("HF_API_KEY is not configured in the environment variables.");
+    }
+
+    let imageResponse;
+    let success = false;
+    let attempt = 1;
+    const maxRetries = 6; // up to 30 seconds wait
+
+    while (attempt <= maxRetries && !success) {
+      if (referenceImage) {
+        // Image-to-Image mode
+        console.log(`Fetching image-to-image from Hugging Face (Attempt ${attempt})...`);
+        const hfModelUrl = "https://api-inference.huggingface.co/models/timbrooks/instruct-pix2pix";
+        
+        const formData = new FormData();
+        const base64Data = referenceImage.replace(/^data:image\/\w+;base64,/, "");
+        const buffer = Buffer.from(base64Data, 'base64');
+        formData.append("image", new Blob([buffer], { type: 'image/png' }));
+        formData.append("inputs", technicalPrompt);
+
+        imageResponse = await fetch(hfModelUrl, {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${hfApiKey}`
+          },
+          body: formData
+        });
+      } else {
+        // Text-to-Image mode
+        console.log(`Fetching text-to-image from Hugging Face (Attempt ${attempt})...`);
+        const hfModelUrl = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0";
+        
+        imageResponse = await fetch(hfModelUrl, {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${hfApiKey}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            inputs: technicalPrompt,
+          })
+        });
+      }
+
+      if (imageResponse.ok) {
+        success = true;
+      } else if (imageResponse.status === 503) {
+        console.warn(`Hugging Face API 503 (Model loading). Attempt ${attempt}/${maxRetries}. Retrying in 5s...`);
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        attempt++;
+      } else {
+        const errorText = await imageResponse.text();
+        console.error(`Hugging Face API error: ${imageResponse.status} - ${errorText}`);
+        throw new Error(`Hugging Face returned status ${imageResponse.status}: ${errorText}`);
+      }
+    }
+
+    if (!success || !imageResponse) {
+       throw new Error("Hugging Face API timed out while loading the model.");
     }
     
     const imageBuffer = Buffer.from(await imageResponse.arrayBuffer());
@@ -650,6 +703,10 @@ app.post('/api/generate-artifact', verifyRequestUser, async (req, res) => {
 
   } catch (e: any) {
     console.error("Artifact generation failed", e);
+    try {
+        const fs = await import('fs');
+        fs.appendFileSync('hf_error.log', new Date().toISOString() + ' | ' + (e.stack || e.message) + '\n');
+    } catch(err) {}
     res.status(500).json({ error: e.message || "Failed to generate artifact" });
   }
 });
