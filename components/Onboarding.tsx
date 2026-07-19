@@ -4,20 +4,33 @@ import { ArrowRight, ArrowLeft, Plus, X, Paperclip, Cpu, Zap, Activity, Grid3X3,
 import { useNavigate } from 'react-router-dom';
 
 interface OnboardingProps {
+  projectType: 'interior' | 'brand' | 'product' | 'vision_board' | 'general';
   onComplete: (context: ProjectContext) => void;
 }
 
-const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
+const Onboarding: React.FC<OnboardingProps> = ({ projectType, onComplete }) => {
   const navigate = useNavigate();
   const [step, setStep] = useState<1 | 2>(1);
   const [formData, setFormData] = useState<ProjectContext>({
+    projectType,
     projectName: '',
-    goal: '',
-    audience: '',
-    needs: '',
-    vibes: '',
-    inspo: []
+    roomPhotos: [],
+    roomType: '',
+    existingFurniture: '',
+    desiredChanges: '',
+    vibes: ''
   });
+
+  const getLabels = () => {
+    switch(projectType) {
+      case 'brand': return { imagesTitle: 'Brand Assets', imagesSubtitle: 'Drag and drop existing logos or inspirations', title: 'Brand Type', titlePlaceholder: 'E.G. TECH STARTUP', existing: 'Existing Brand Assets', existingPlaceholder: 'E.G. LOGO, COLOR PALETTE', needs: 'Specific Needs', needsPlaceholder: 'E.G. NEW LOGO DESIGN' };
+      case 'product': return { imagesTitle: 'Reference Images', imagesSubtitle: 'Drag and drop product references', title: 'Product Type', titlePlaceholder: 'E.G. SMART WATCH', existing: 'Constraints / Materials', existingPlaceholder: 'E.G. MUST BE ALUMINUM', needs: 'Specific Needs', needsPlaceholder: 'E.G. BETTER ERGONOMICS' };
+      case 'vision_board': return { imagesTitle: 'Inspiration', imagesSubtitle: 'Drag and drop moodboard references', title: 'Theme / Goal', titlePlaceholder: 'E.G. CYBERPUNK FASHION', existing: 'Mandatory Elements', existingPlaceholder: 'E.G. NEON LIGHTS', needs: 'Specific Needs', needsPlaceholder: 'E.G. MORE TEXTURES' };
+      case 'general': return { imagesTitle: 'Reference Images', imagesSubtitle: 'Drag and drop anything', title: 'Project Goal', titlePlaceholder: 'E.G. NEW WEBSITE', existing: 'Constraints / Assets', existingPlaceholder: 'E.G. EXISTING LOGO', needs: 'Specific Needs', needsPlaceholder: 'E.G. MORE MODERN LOOK' };
+      default: return { imagesTitle: 'Room Photos', imagesSubtitle: 'Drag and drop photos of your space', title: 'Room Type', titlePlaceholder: 'E.G. LIVING ROOM', existing: 'Existing Furniture (To Keep)', existingPlaceholder: 'E.G. BROWN LEATHER SOFA', needs: 'Desired Changes', needsPlaceholder: 'E.G. NEED MORE LIGHTING' };
+    }
+  };
+  const labels = getLabels();
   
   const [isDragging, setIsDragging] = useState(false);
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
@@ -36,7 +49,6 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
 
   const handleNext = () => {
     if (step === 1) {
-      if (formData.roomPhotos.length === 0) return;
       setStep(2);
     } else {
       onComplete({
@@ -120,7 +132,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
           </div>
       </div>
 
-      {/* PHASE 1: UPLOAD ROOM PHOTOS */}
+      {/* PHASE 1: UPLOAD REFERENCE IMAGES */}
       <div 
         className={`absolute inset-0 w-full h-full transition-all duration-700 flex flex-col z-30 ${step === 1 ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none scale-105'}`}
       >
@@ -138,13 +150,24 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
             {/* Content Area */}
             <div className="absolute inset-0 overflow-y-auto pt-28 pb-40 px-6 custom-scrollbar">
                 {formData.roomPhotos.length === 0 ? (
-                    <div className="h-full flex flex-col items-center justify-center text-neutral-400 pointer-events-none select-none">
-                         <div className="w-32 h-32 bg-white rounded-full flex items-center justify-center mb-6 shadow-sm border border-black/5">
-                             <Paperclip className="w-8 h-8 text-neutral-300" />
+                    <label className="h-full flex flex-col items-center justify-center text-neutral-400 select-none cursor-pointer group">
+                        <input type="file" className="hidden" multiple accept="image/*" onChange={(e) => {
+                            if (e.target.files) {
+                                Array.from(e.target.files).forEach((file: File) => {
+                                    const reader = new FileReader();
+                                    reader.onload = (ev) => {
+                                        if(ev.target?.result) setFormData(prev => ({...prev, roomPhotos: [...prev.roomPhotos, ev.target!.result as string]}));
+                                    };
+                                    reader.readAsDataURL(file);
+                                });
+                            }
+                        }} />
+                         <div className="w-32 h-32 bg-white rounded-full flex items-center justify-center mb-6 shadow-sm border border-black/5 group-hover:border-black/20 group-hover:shadow-md transition-all">
+                             <Paperclip className="w-8 h-8 text-neutral-300 group-hover:text-black transition-colors" />
                          </div>
-                        <p className="font-mono text-sm uppercase tracking-widest mb-2 text-neutral-500">Room Photos</p>
-                        <p className="text-xs opacity-50 font-serif italic">Drag and drop photos of your space</p>
-                    </div>
+                        <p className="font-mono text-sm uppercase tracking-widest mb-2 text-neutral-500 group-hover:text-black transition-colors">{labels.imagesTitle}</p>
+                        <p className="text-xs opacity-50 font-serif italic group-hover:opacity-80 transition-opacity">Click to browse or {labels.imagesSubtitle.toLowerCase()}</p>
+                    </label>
                 ) : (
                     <div className="flex flex-wrap gap-8 justify-center items-start content-start min-h-full">
                         {formData.roomPhotos.map((src, i) => (
@@ -201,7 +224,6 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                     {/* Submit */}
                     <button 
                         onClick={handleNext}
-                        disabled={formData.roomPhotos.length === 0}
                         className="bg-black text-white px-8 py-3 rounded-full font-mono text-[10px] uppercase tracking-widest hover:bg-neutral-800 transition-colors ml-1.5 flex items-center gap-2 shadow-lg disabled:opacity-20"
                     >
                         <span>Next: Details</span>
@@ -220,7 +242,7 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                 onClick={() => setStep(1)} 
                 className="absolute top-8 left-8 pointer-events-auto bg-white border border-black/5 shadow-sm hover:bg-neutral-50 text-neutral-600 px-4 py-2 flex items-center gap-2 font-mono text-xs uppercase tracking-wider group rounded-full"
             >
-                <ArrowLeft size={12} className="group-hover:-translate-x-1 transition-transform" /> Back to Photos
+                <ArrowLeft size={12} className="group-hover:-translate-x-1 transition-transform" /> Back to {labels.imagesTitle}
           </button>
 
           {/* Main Central Card */}
@@ -254,13 +276,13 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                     <div className="group">
                         <div className="flex items-center gap-3 mb-2">
                              <span className="w-1.5 h-1.5 bg-black rounded-full"></span>
-                             <label className="font-mono text-[9px] uppercase tracking-widest text-neutral-500">Room Type</label>
+                             <label className="font-mono text-[9px] uppercase tracking-widest text-neutral-500">{labels.title}</label>
                         </div>
                         <input 
                             value={formData.roomType}
                             onChange={e => setFormData({...formData, roomType: e.target.value})}
                             className="w-full bg-transparent border-b border-neutral-300 py-2 font-mono text-sm text-black outline-none focus:border-black transition-colors placeholder:text-neutral-300"
-                            placeholder="E.G. LIVING ROOM"
+                            placeholder={labels.titlePlaceholder}
                         />
                     </div>
 
@@ -268,13 +290,13 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                     <div className="group">
                         <div className="flex items-center gap-3 mb-2">
                              <span className="w-1.5 h-1.5 bg-neutral-300 group-focus-within:bg-black rounded-full transition-colors"></span>
-                             <label className="font-mono text-[9px] uppercase tracking-widest text-neutral-500">Existing Furniture (To Keep)</label>
+                             <label className="font-mono text-[9px] uppercase tracking-widest text-neutral-500">{labels.existing}</label>
                         </div>
                         <textarea 
                             value={formData.existingFurniture}
                             onChange={e => setFormData({...formData, existingFurniture: e.target.value})}
                             className="w-full bg-transparent border-b border-neutral-300 py-2 font-mono text-sm text-black outline-none focus:border-black transition-colors placeholder:text-neutral-300 resize-none h-12"
-                            placeholder="E.G. BROWN LEATHER SOFA"
+                            placeholder={labels.existingPlaceholder}
                         />
                     </div>
 
@@ -282,13 +304,13 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
                     <div className="group">
                          <div className="flex items-center gap-3 mb-2">
                              <span className="w-1.5 h-1.5 bg-neutral-300 group-focus-within:bg-black rounded-full transition-colors"></span>
-                             <label className="font-mono text-[9px] uppercase tracking-widest text-neutral-500">Desired Changes</label>
+                             <label className="font-mono text-[9px] uppercase tracking-widest text-neutral-500">{labels.needs}</label>
                         </div>
                         <textarea 
                             value={formData.desiredChanges}
                             onChange={e => setFormData({...formData, desiredChanges: e.target.value})}
                             className="w-full bg-transparent border-b border-neutral-300 py-2 font-mono text-sm text-black outline-none focus:border-black transition-colors placeholder:text-neutral-300 resize-none h-16"
-                            placeholder="E.G. NEED MORE LIGHTING, WANT A COZY FEEL"
+                            placeholder={labels.needsPlaceholder}
                         />
                     </div>
 

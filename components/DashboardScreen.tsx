@@ -115,12 +115,12 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <div className="text-[10px] font-mono uppercase tracking-[0.22em] text-neutral-400">{project.context.projectName || 'Untitled project'}</div>
-                      <h3 className="mt-2 text-lg font-semibold text-black">{project.context.goal || project.context.projectName || 'Untitled project'}</h3>
+                      <h3 className="mt-2 text-lg font-semibold text-black">{project.context.roomType || project.context.projectName || 'Untitled project'}</h3>
                     </div>
                     <ArrowRight className="mt-1 h-4 w-4 text-neutral-400 transition-transform group-hover:translate-x-0.5 group-hover:text-black" />
                   </div>
 
-                  <p className="mt-3 line-clamp-3 text-sm leading-6 text-neutral-600">{project.context.vibes || project.context.needs || 'No summary yet.'}</p>
+                  <p className="mt-3 line-clamp-3 text-sm leading-6 text-neutral-600">{project.context.vibes || project.context.desiredChanges || 'No summary yet.'}</p>
 
                   <div className="mt-5 flex items-center justify-between border-t border-neutral-200 pt-4 text-xs text-neutral-500">
                     <span>{project.sessionCount} session{project.sessionCount === 1 ? '' : 's'}</span>
