@@ -41,17 +41,13 @@ const App: React.FC = () => {
   const processedTrigger = useRef(0);
 
   const [tool, setTool] = useState<'select' | 'pan' | 'focus' | 'text' | 'pencil' | 'rectangle' | 'ellipse' | 'arrow'>('select');
-  const [activeColor, setActiveColor] = useState('#1b198e');
+  const activeColor = '#D90429'; // Single primary color
   const [activeOpacity, setActiveOpacity] = useState(1);
   const [activeStrokeWidth, setActiveStrokeWidth] = useState(3);
-  const [showColorPanel, setShowColorPanel] = useState(false);
-  const [colorPanelPos, setColorPanelPos] = useState<{ top: number; left: number } | null>(null);
   const [processingStatus, setProcessingStatus] = useState<string | null>(null);
   const [showStickerMenu, setShowStickerMenu] = useState(false);
   const [stickerMenuPos, setStickerMenuPos] = useState<{ top: number; left: number } | null>(null);
   const [isChatOpen, setIsChatOpen] = useState(true);
-  const colorPanelRef = useRef<HTMLDivElement>(null);
-  const colorSwatchBtnRef = useRef<HTMLButtonElement>(null);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [selectedProjectType, setSelectedProjectType] = useState<'interior' | 'brand' | 'product' | 'vision_board' | 'general' | null>(null);
@@ -91,6 +87,13 @@ const App: React.FC = () => {
   const handleCanvasInteractionEnd = useCallback(() => {
     setHistoryTrigger(prev => prev + 1);
   }, []);
+
+  useEffect(() => {
+    if (historyTrigger > 0 && historyTrigger !== processedTrigger.current) {
+      saveToHistory(canvasElements);
+      processedTrigger.current = historyTrigger;
+    }
+  }, [historyTrigger, canvasElements, saveToHistory]);
 
   const updateElementsWithHistory = (newElements: CanvasElement[] | ((prev: CanvasElement[]) => CanvasElement[])) => {
     setCanvasElements(prev => {
@@ -145,14 +148,6 @@ const App: React.FC = () => {
     if (top + panelH > vh - MARGIN) top = vh - panelH - MARGIN;
     top = Math.max(MARGIN, top);
     return { top, left };
-  };
-
-  const openColorPanel = () => {
-    if (showColorPanel) { setShowColorPanel(false); return; }
-    // Approximate panel height (color picker panel ~520px)
-    const pos = calcFlyoutPos(colorSwatchBtnRef as React.RefObject<HTMLButtonElement | null>, 272, 520);
-    setColorPanelPos(pos);
-    setShowColorPanel(true);
   };
 
   const openStickerMenu = () => {
@@ -828,18 +823,6 @@ const App: React.FC = () => {
 
           {/* Layer 1: Left Vertical Toolbar */}
           {(() => {
-            const QUICK_COLORS = [
-              '#EF4444','#F97316','#EAB308','#22C55E','#06B6D4','#3B82F6','#8B5CF6','#EC4899',
-              '#000000','#374151','#6B7280','#D1D5DB','#ffffff','#7C3AED','#1D4ED8','#BE185D',
-            ];
-            const GRADIENTS = [
-              { label: 'Sunset',   colors: ['#F97316','#EF4444'] },
-              { label: 'Ocean',    colors: ['#06B6D4','#3B82F6'] },
-              { label: 'Forest',   colors: ['#22C55E','#065F46'] },
-              { label: 'Violet',   colors: ['#8B5CF6','#EC4899'] },
-              { label: 'Midnight', colors: ['#1E1B4B','#3B82F6'] },
-              { label: 'Blaze',    colors: ['#FCD34D','#EF4444'] },
-            ];
             const isDrawingTool = ['pencil','rectangle','ellipse','arrow','text'].includes(tool);
             void isDrawingTool; // reserved for future conditional UI
 
@@ -942,221 +925,11 @@ const App: React.FC = () => {
                     </button>
                   </div>
                 </div>
-
-                {/* Color + Style Panel */}
-                <div className="pointer-events-auto flex flex-col bg-white/90 backdrop-blur-xl rounded-2xl shadow-2xl shadow-black/10 border border-neutral-200/80 p-2" style={{ width: '52px' }}>
-                  <div className="flex flex-col items-center">
-                    <button
-                      ref={colorSwatchBtnRef}
-                      onClick={openColorPanel}
-                      title="Color & Style"
-                      className="w-9 h-9 rounded-xl border-2 border-white shadow-md hover:scale-105 transition-all relative overflow-hidden"
-                      style={{ background: activeColor }}
-                    >
-                      <span className="absolute inset-0 flex items-end justify-end p-0.5">
-                        <ChevronDown className="w-2.5 h-2.5 text-white/70 drop-shadow" />
-                      </span>
-                    </button>
-                  </div>
-                </div>
               </div>
             );
           })()}
 
           {/* Portal flyouts — rendered at body level for correct viewport positioning */}
-          {showColorPanel && colorPanelPos && createPortal(
-            <>
-              {/* backdrop to close on outside click */}
-              <div
-                className="fixed inset-0 z-[90]"
-                onClick={() => setShowColorPanel(false)}
-              />
-              <div
-                ref={colorPanelRef}
-                className="fixed z-[91] w-68 bg-white rounded-2xl shadow-2xl border border-neutral-100 p-4 flex flex-col gap-3 overflow-y-auto"
-                style={{
-                  top: colorPanelPos.top,
-                  left: colorPanelPos.left,
-                  width: '272px',
-                  maxHeight: 'calc(100vh - 16px)',
-                  animation: 'fadeSlideIn 0.15s ease',
-                }}
-                onClick={e => e.stopPropagation()}
-              >
-                {/* Header */}
-                <div className="flex items-center justify-between">
-                  <div className="text-[9px] font-mono uppercase tracking-widest text-neutral-400">Color &amp; Style</div>
-                  <button onClick={() => setShowColorPanel(false)} className="w-5 h-5 flex items-center justify-center rounded-md hover:bg-neutral-100 text-neutral-400 hover:text-neutral-700 transition-colors">
-                    <X className="w-3 h-3" />
-                  </button>
-                </div>
-
-                {/* Quick palette */}
-                <div>
-                  <div className="text-[9px] font-mono uppercase tracking-widest text-neutral-400 mb-2">Quick Colors</div>
-                  <div className="grid grid-cols-8 gap-1">
-                    {(['#EF4444','#F97316','#EAB308','#22C55E','#06B6D4','#3B82F6','#8B5CF6','#EC4899',
-                       '#000000','#374151','#6B7280','#D1D5DB','#ffffff','#7C3AED','#1D4ED8','#BE185D']).map(c => (
-                      <button
-                        key={c}
-                        onClick={() => setActiveColor(c)}
-                        title={c}
-                        className={`w-6 h-6 rounded-md border-2 transition-all hover:scale-110 ${
-                          activeColor === c ? 'border-neutral-900 scale-110' : 'border-transparent'
-                        } ${c === '#ffffff' ? 'border-neutral-200' : ''}`}
-                        style={{ backgroundColor: c }}
-                      />
-                    ))}
-                  </div>
-                </div>
-
-                {/* Gradients */}
-                <div>
-                  <div className="text-[9px] font-mono uppercase tracking-widest text-neutral-400 mb-2">Gradients</div>
-                  <div className="grid grid-cols-3 gap-1.5">
-                    {([
-                      { label: 'Sunset',   colors: ['#F97316','#EF4444'] },
-                      { label: 'Ocean',    colors: ['#06B6D4','#3B82F6'] },
-                      { label: 'Forest',   colors: ['#22C55E','#065F46'] },
-                      { label: 'Violet',   colors: ['#8B5CF6','#EC4899'] },
-                      { label: 'Midnight', colors: ['#1E1B4B','#3B82F6'] },
-                      { label: 'Blaze',    colors: ['#FCD34D','#EF4444'] },
-                    ]).map(g => (
-                      <div key={g.label} className="flex flex-col items-center gap-0.5">
-                        <button
-                          onClick={() => setActiveColor(g.colors[0])}
-                          title={g.label}
-                          className={`w-full h-8 rounded-lg hover:scale-105 transition-all border-2 overflow-hidden ${
-                            activeColor === g.colors[0] ? 'border-neutral-900' : 'border-transparent hover:border-neutral-300'
-                          }`}
-                          style={{ background: `linear-gradient(135deg, ${g.colors[0]}, ${g.colors[1]})` }}
-                        />
-                        <span className="text-[8px] font-mono text-neutral-400 uppercase tracking-wide">{g.label}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Custom color picker — full width prominent row */}
-                <div>
-                  <div className="text-[9px] font-mono uppercase tracking-widest text-neutral-400 mb-2">Custom Color</div>
-                  <label className="flex items-center gap-3 p-2 rounded-xl border-2 border-neutral-200 hover:border-neutral-400 transition-colors cursor-pointer group">
-                    <div className="relative w-10 h-10 rounded-lg overflow-hidden flex-shrink-0 shadow-sm">
-                      <input
-                        type="color"
-                        id="canvas-color-input"
-                        value={activeColor}
-                        onChange={(e) => setActiveColor(e.target.value)}
-                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                        aria-label="Custom color picker"
-                      />
-                      <span className="absolute inset-0" style={{ background: activeColor }} />
-                      <span className="absolute inset-0 flex items-center justify-center">
-                        <Palette className="w-4 h-4 text-white drop-shadow" />
-                      </span>
-                    </div>
-                    <div className="flex flex-col flex-1 min-w-0">
-                      <span className="text-[10px] font-mono text-neutral-500 uppercase tracking-widest mb-1">Click to open picker</span>
-                      <input
-                        type="text"
-                        value={activeColor}
-                        onChange={(e) => {
-                          const v = e.target.value;
-                          if (/^#[0-9a-fA-F]{0,6}$/.test(v)) setActiveColor(v);
-                        }}
-                        onClick={e => e.stopPropagation()}
-                        maxLength={7}
-                        className="w-full text-[11px] font-mono bg-neutral-50 border border-neutral-200 rounded-lg px-2 py-1 text-neutral-700 focus:outline-none focus:border-neutral-400 uppercase"
-                        placeholder="#000000"
-                      />
-                    </div>
-                    <div className="w-6 h-6 rounded-md flex-shrink-0 border border-neutral-200 shadow-sm" style={{ background: activeColor }} />
-                  </label>
-                </div>
-
-                {/* Stroke width */}
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="text-[9px] font-mono uppercase tracking-widest text-neutral-400">Stroke Width</div>
-                    <span className="text-[10px] font-mono text-neutral-600 font-semibold">{activeStrokeWidth}px</span>
-                  </div>
-                  <div className="flex items-center gap-2 mb-2">
-                    <button onClick={() => setActiveStrokeWidth(w => Math.max(1, w - 1))} className="w-6 h-6 flex items-center justify-center rounded-md bg-neutral-100 hover:bg-neutral-200 text-neutral-600 transition-colors">
-                      <Minus className="w-3 h-3" />
-                    </button>
-                    <input
-                      type="range" min={1} max={30} value={activeStrokeWidth}
-                      onChange={e => setActiveStrokeWidth(Number(e.target.value))}
-                      className="flex-1 accent-neutral-800"
-                    />
-                    <button onClick={() => setActiveStrokeWidth(w => Math.min(30, w + 1))} className="w-6 h-6 flex items-center justify-center rounded-md bg-neutral-100 hover:bg-neutral-200 text-neutral-600 transition-colors">
-                      <Plus className="w-3 h-3" />
-                    </button>
-                  </div>
-                  <div className="flex gap-1">
-                    {[1,2,4,8,16].map(w => (
-                      <button
-                        key={w}
-                        onClick={() => setActiveStrokeWidth(w)}
-                        title={`${w}px`}
-                        className={`flex-1 flex items-center justify-center h-6 rounded-md transition-all ${
-                          activeStrokeWidth === w ? 'bg-neutral-900' : 'bg-neutral-100 hover:bg-neutral-200'
-                        }`}
-                      >
-                        <div className={`rounded-full ${activeStrokeWidth === w ? 'bg-white' : 'bg-neutral-500'}`}
-                          style={{ width: `${Math.min(w * 2, 20)}px`, height: `${Math.min(w, 10)}px` }}
-                        />
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Opacity */}
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="text-[9px] font-mono uppercase tracking-widest text-neutral-400">Opacity</div>
-                    <span className="text-[10px] font-mono text-neutral-600 font-semibold">{Math.round(activeOpacity * 100)}%</span>
-                  </div>
-                  <div className="relative h-5 rounded-lg overflow-hidden border border-neutral-200 mb-2"
-                    style={{
-                      backgroundImage: `
-                        linear-gradient(45deg, #ddd 25%, transparent 25%),
-                        linear-gradient(-45deg, #ddd 25%, transparent 25%),
-                        linear-gradient(45deg, transparent 75%, #ddd 75%),
-                        linear-gradient(-45deg, transparent 75%, #ddd 75%),
-                        linear-gradient(to right, transparent, ${activeColor})
-                      `,
-                      backgroundSize: '8px 8px, 8px 8px, 8px 8px, 8px 8px, 100% 100%',
-                      backgroundPosition: '0 0, 0 4px, 4px -4px, -4px 0, 0 0',
-                    }}
-                  >
-                    <input
-                      type="range" min={0} max={100} value={Math.round(activeOpacity * 100)}
-                      onChange={e => setActiveOpacity(Number(e.target.value) / 100)}
-                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                    />
-                    <div
-                      className="absolute top-1/2 -translate-y-1/2 w-4 h-4 rounded-full bg-white border-2 border-neutral-400 shadow-md pointer-events-none"
-                      style={{ left: `calc(${activeOpacity * 100}% - 8px)` }}
-                    />
-                  </div>
-                  <div className="flex gap-1">
-                    {[25, 50, 75, 100].map(v => (
-                      <button
-                        key={v}
-                        onClick={() => setActiveOpacity(v / 100)}
-                        className={`flex-1 py-1 text-[9px] font-mono rounded-md transition-all ${
-                          Math.round(activeOpacity * 100) === v ? 'bg-neutral-900 text-white' : 'bg-neutral-100 hover:bg-neutral-200 text-neutral-600'
-                        }`}
-                      >{v}%</button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </>,
-            document.body
-          )}
-
           {showStickerMenu && stickerMenuPos && createPortal(
             <>
               <div

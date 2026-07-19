@@ -8,6 +8,7 @@ import { initializeApp, applicationDefault, cert, getApps } from 'firebase-admin
 import { getFirestore } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
 import type { CanvasElement, ChatMessage, ProjectContext } from './types';
+import sharp from 'sharp';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -15,6 +16,33 @@ const PORT = process.env.PORT || 3001;
 // Set up JSON parsing with generous limits for base64 images
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ limit: '100mb', extended: true }));
+
+async function compressImageBase64(base64Data: string): Promise<string> {
+  if (!base64Data || !base64Data.startsWith('data:image/')) return base64Data;
+  try {
+    const matches = base64Data.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+    if (!matches || matches.length !== 3) return base64Data;
+    const type = matches[1];
+    const data = matches[2];
+    const buffer = Buffer.from(data, 'base64');
+    
+    // Only compress if the image is reasonably large (>50KB)
+    if (buffer.length < 50 * 1024) return base64Data;
+
+    const compressedBuffer = await sharp(buffer)
+      .resize(1024, 1024, {
+        fit: 'inside',
+        withoutEnlargement: true
+      })
+      .webp({ quality: 80 })
+      .toBuffer();
+      
+    return `data:image/webp;base64,${compressedBuffer.toString('base64')}`;
+  } catch (error) {
+    console.error('Error compressing image:', error);
+    return base64Data;
+  }
+}
 
 type ProjectSnapshot = {
   context: ProjectContext;
@@ -28,14 +56,14 @@ type ProjectSnapshot = {
   ownerPhotoURL?: string;
 };
 
-type ProjectDocument = ProjectSnapshot & {
+type ProjectDocument = Omit<ProjectSnapshot, 'messages'> & {
   currentSessionId: string;
   sessionCount: number;
   messageCount: number;
   latestSessionUpdatedAt: number;
 };
 
-type SessionDocument = ProjectSnapshot & {
+type SessionDocument = Omit<ProjectSnapshot, 'messages'> & {
   messageCount: number;
   lastMessageAt: number | null;
 };
@@ -199,6 +227,27 @@ const normalizeProjectDocument = (projectId: string, data: any): ProjectSummary 
 });
 
 const persistProjectSnapshot = async (db: NonNullable<ReturnType<typeof getFirestore>>, projectId: string | null, payload: ProjectSnapshot, firebaseUser?: { uid: string; name?: string; email?: string; picture?: string }, sessionId?: string | null) => {
+  if (payload.context?.roomPhotos) {
+    payload.context.roomPhotos = await Promise.all(
+      payload.context.roomPhotos.map(photo => compressImageBase64(photo))
+    );
+  }
+  if (payload.canvasElements) {
+    for (const el of payload.canvasElements) {
+      if (el.type === 'image' && el.src) {
+        el.src = await compressImageBase64(el.src);
+      }
+    }
+  }
+  if (payload.messages) {
+    for (const msg of payload.messages) {
+      if (msg.image) {
+        msg.image = await compressImageBase64(msg.image);
+      }
+    }
+  }
+
+  const { messages, ...payloadWithoutMessages } = payload;
   const projectRef = projectId ? getProjectRef(db, projectId) : db.collection('projects').doc();
   const resolvedProjectId = projectRef.id;
   const existingProject = await projectRef.get();
@@ -214,7 +263,7 @@ const persistProjectSnapshot = async (db: NonNullable<ReturnType<typeof getFires
   const lastMessageAt = payload.messages.length > 0 ? payload.messages[payload.messages.length - 1].timestamp : updatedAt;
 
   const sessionDocument: SessionDocument = {
-    ...payload,
+    ...payloadWithoutMessages,
     createdAt,
     updatedAt,
     ownerUid: existingProject.data()?.ownerUid || firebaseUser?.uid,
@@ -226,7 +275,7 @@ const persistProjectSnapshot = async (db: NonNullable<ReturnType<typeof getFires
   };
 
   const projectDocument: ProjectDocument = {
-    ...payload,
+    ...payloadWithoutMessages,
     createdAt,
     updatedAt,
     ownerUid: sessionDocument.ownerUid,
@@ -243,7 +292,7 @@ const persistProjectSnapshot = async (db: NonNullable<ReturnType<typeof getFires
   await sessionRef.set(sessionDocument, { merge: true });
   await replaceSessionMessages(sessionRef, payload.messages);
 
-  return { projectId: resolvedProjectId, sessionId: resolvedSessionId, ...sessionDocument, currentSessionId: resolvedSessionId, sessionCount: projectDocument.sessionCount, latestSessionUpdatedAt: updatedAt };
+  return { projectId: resolvedProjectId, sessionId: resolvedSessionId, ...sessionDocument, messages: payload.messages, currentSessionId: resolvedSessionId, sessionCount: projectDocument.sessionCount, latestSessionUpdatedAt: updatedAt };
 };
 
 const getFirebaseUser = (req: express.Request) => (req as any).firebaseUser as { uid: string; name?: string; email?: string; picture?: string } | undefined;
@@ -644,27 +693,35 @@ app.post('/api/generate-artifact', verifyRequestUser, async (req, res) => {
 
     while (attempt <= maxRetries && !success) {
       if (referenceImage) {
-        // Image-to-Image mode
-        console.log(`Fetching image-to-image from Hugging Face (Attempt ${attempt})...`);
-        const hfModelUrl = "https://api-inference.huggingface.co/models/timbrooks/instruct-pix2pix";
-        
-        const formData = new FormData();
+        // Image-to-Image mode: Use Gemini to analyze the image and generate a highly detailed text prompt, then use FLUX text-to-image
+        console.log(`Using Gemini to rewrite prompt for image-to-image (Attempt ${attempt})...`);
+        const geminiClient = getClient();
         const base64Data = referenceImage.replace(/^data:image\/\w+;base64,/, "");
-        const buffer = Buffer.from(base64Data, 'base64');
-        formData.append("image", new Blob([buffer], { type: 'image/png' }));
-        formData.append("inputs", technicalPrompt);
-
-        imageResponse = await fetch(hfModelUrl, {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${hfApiKey}`
-          },
-          body: formData
-        });
-      } else {
-        // Text-to-Image mode
-        console.log(`Fetching text-to-image from Hugging Face (Attempt ${attempt})...`);
-        const hfModelUrl = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0";
+        let newPrompt = technicalPrompt;
+        
+        try {
+          const geminiRes = await geminiClient.models.generateContent({
+            model: "gemini-3.1-flash-lite", // using a lightweight model to avoid quota limits
+            contents: [
+              {
+                role: 'user',
+                parts: [
+                  { inlineData: { data: base64Data, mimeType: "image/png" } },
+                  { text: `I want to edit this image. The requested edit is: "${technicalPrompt}".\nPlease write a highly detailed text-to-image prompt that recreates this exact image (same layout, style, lighting, main subjects, background) but incorporates the requested edits perfectly.\n\nReply ONLY with the final text prompt. Do not include any conversational filler.` }
+                ]
+              }
+            ]
+          });
+          if (geminiRes.text) {
+             newPrompt = geminiRes.text;
+             console.log(`Gemini rewrote prompt to: ${newPrompt.substring(0, 100)}...`);
+          }
+        } catch (err) {
+          console.error("Failed Gemini rewrite:", err);
+          // fall back to technicalPrompt if it fails
+        }
+        
+        const hfModelUrl = "https://router.huggingface.co/together/v1/images/generations";
         
         imageResponse = await fetch(hfModelUrl, {
           method: "POST",
@@ -673,7 +730,26 @@ app.post('/api/generate-artifact', verifyRequestUser, async (req, res) => {
             "Content-Type": "application/json"
           },
           body: JSON.stringify({
-            inputs: technicalPrompt,
+            model: "black-forest-labs/FLUX.1-schnell",
+            prompt: newPrompt,
+            response_format: "b64_json"
+          })
+        });
+      } else {
+        // Text-to-Image mode
+        console.log(`Fetching text-to-image from Hugging Face (Attempt ${attempt})...`);
+        const hfModelUrl = "https://router.huggingface.co/together/v1/images/generations";
+        
+        imageResponse = await fetch(hfModelUrl, {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${hfApiKey}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            model: "black-forest-labs/FLUX.1-schnell",
+            prompt: technicalPrompt,
+            response_format: "b64_json"
           })
         });
       }
@@ -695,9 +771,20 @@ app.post('/api/generate-artifact', verifyRequestUser, async (req, res) => {
        throw new Error("Hugging Face API timed out while loading the model.");
     }
     
-    const imageBuffer = Buffer.from(await imageResponse.arrayBuffer());
-    const base64Image = imageBuffer.toString('base64');
-    console.log(`Image generated successfully (${imageBuffer.length} bytes)`);
+    const contentType = imageResponse.headers.get("content-type") || "";
+    let base64Image;
+    if (contentType.includes("application/json")) {
+      const data = await imageResponse.json();
+      if (data.data && data.data[0] && data.data[0].b64_json) {
+         base64Image = data.data[0].b64_json;
+      } else {
+         throw new Error("Unexpected JSON format from HF router: " + JSON.stringify(data));
+      }
+    } else {
+      const imageBuffer = Buffer.from(await imageResponse.arrayBuffer());
+      base64Image = imageBuffer.toString('base64');
+    }
+    console.log(`Image generated successfully`);
     
     return res.json({ image: base64Image });
 

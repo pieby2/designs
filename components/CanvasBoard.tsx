@@ -378,6 +378,13 @@ const CanvasBoard = memo(forwardRef<CanvasBoardHandle, CanvasBoardProps>(({ elem
   const drawElement = (ctx: CanvasRenderingContext2D, el: CanvasElement) => {
     ctx.save();
     ctx.globalAlpha = el.opacity ?? 1;
+
+    // Add white halo for contrast against similar backgrounds
+    if (el.type !== 'image' && el.type !== 'focus') {
+        ctx.shadowColor = 'rgba(255, 255, 255, 0.9)';
+        ctx.shadowBlur = 4;
+    }
+
     if (el.type === 'image' && el.src) {
         let img = imageCache.current.get(el.src);
         if (!img) {
@@ -532,6 +539,11 @@ const CanvasBoard = memo(forwardRef<CanvasBoardHandle, CanvasBoardProps>(({ elem
 
         // Draw Interactivity
         ctx.globalAlpha = activeOpacity;
+        
+        // Add white halo for contrast during active drawing
+        ctx.shadowColor = 'rgba(255, 255, 255, 0.9)';
+        ctx.shadowBlur = 4;
+
         if (tool === 'pencil' && currentPath.length > 0) {
             ctx.beginPath();
             ctx.strokeStyle = activeColor; 
@@ -570,6 +582,10 @@ const CanvasBoard = memo(forwardRef<CanvasBoardHandle, CanvasBoardProps>(({ elem
                  ctx.stroke();
              }
         }
+
+        // Remove shadow for UI overlays
+        ctx.shadowBlur = 0;
+        ctx.shadowColor = 'transparent';
 
         // Focus & Text Box Previews
         if (tool === 'focus' && focusStart && dragStart && currentPath.length > 0) {
