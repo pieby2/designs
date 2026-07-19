@@ -96,8 +96,33 @@ The app will start at **http://localhost:3001** 🎉
 | Command | Description |
 |---|---|
 | `npm run dev` | Start the development server |
-| `npm run build` | Build for production |
-| `npm start` | Run the production build |
+| `npm run build` | Build the frontend for Vercel/static hosting |
+| `npm run build:local` | Build the frontend and local Express production server |
+| `npm start` | Run a local production server after `npm run build:local` |
+
+## ▲ Deploy to Vercel
+
+This project is configured for Vercel: Vite builds the frontend and
+`api/[...path].ts` runs the Express API as a serverless function.
+
+1. Push the project to GitHub and import it in Vercel, or run `vercel` from the
+   project root.
+2. Add these environment variables in Vercel for **Production**, **Preview**,
+   and **Development** as appropriate:
+   - `GEMINI_API_KEY` (or `API_KEY`) and `HF_API_KEY`
+   - `FIREBASE_PROJECT_ID`, `FIREBASE_CLIENT_EMAIL`, and
+     `FIREBASE_PRIVATE_KEY` (paste the private key with its line breaks)
+   - Every `VITE_FIREBASE_*` value from `.env.example`
+3. In Firebase Authentication, add your deployed Vercel domain to **Authorized
+   domains**.
+
+The API currently accepts base64 images. Keep individual requests under
+Vercel's request-size limit; for larger images, upload them to Firebase Storage
+and send URLs instead.
+
+Image generation is allowed up to 60 seconds per request. This is supported on
+Vercel Hobby and higher plans; lower limits in your plan settings can still
+cause long-running generation requests to time out.
 
 ---
 

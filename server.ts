@@ -1,8 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
-import path from 'path';
-import { createServer as createViteServer } from 'vite';
-import { GoogleGenAI, Type, ThinkingLevel } from '@google/genai';
+import { GoogleGenAI, Type } from '@google/genai';
 import { SYSTEM_INSTRUCTIONS } from './constants.js';
 import { initializeApp, applicationDefault, cert, getApps } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
@@ -790,10 +788,6 @@ app.post('/api/generate-artifact', verifyRequestUser, async (req, res) => {
 
   } catch (e: any) {
     console.error("Artifact generation failed", e);
-    try {
-        const fs = await import('fs');
-        fs.appendFileSync('hf_error.log', new Date().toISOString() + ' | ' + (e.stack || e.message) + '\n');
-    } catch(err) {}
     res.status(500).json({ error: e.message || "Failed to generate artifact" });
   }
 });
@@ -801,6 +795,9 @@ app.post('/api/generate-artifact', verifyRequestUser, async (req, res) => {
 // --- Vite Middleware Setup ---
 
 async function startServer() {
+  const { createServer: createViteServer } = await import('vite');
+  const path = await import('path');
+
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -820,4 +817,10 @@ async function startServer() {
   });
 }
 
-startServer();
+// Vercel imports this Express app from api/[...path].ts. A serverless function
+// must not listen on a port; Vercel invokes the exported app for each request.
+if (!process.env.VERCEL) {
+  startServer();
+}
+
+export default app;
