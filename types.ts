@@ -3,11 +3,12 @@
 export type StickerType = 'heart' | 'cross' | 'roller' | 'cube';
 
 export interface ProjectContext {
+  projectType: 'interior' | 'brand' | 'product' | 'vision_board' | 'general';
   projectName: string;
-  roomPhotos: string[]; // Base64 images
-  roomType: string;
-  existingFurniture: string; // What they want to keep
-  desiredChanges: string; // Describing any changes
+  roomPhotos: string[]; // Generic reference images (kept as roomPhotos for backward compatibility in parts of the code, but used generally)
+  roomType: string; // Used generally as Goal / Type
+  existingFurniture: string; // Used generally as Constraints / Existing Elements
+  desiredChanges: string; // Used generally as Specific Needs / Changes
   vibes: string; // Target vibe
 }
 
