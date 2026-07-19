@@ -1,8 +1,8 @@
-
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import Onboarding from './components/Onboarding';
 import CanvasBoard, { CanvasBoardHandle } from './components/CanvasBoard';
+import ProjectTypeSelector from "./components/ProjectTypeSelector";
 import ChatPanel from './components/ChatPanel';
 import AuthScreen from './components/AuthScreen';
 import WorkspaceNavbar from './components/WorkspaceNavbar';
@@ -54,6 +54,7 @@ const App: React.FC = () => {
   const colorSwatchBtnRef = useRef<HTMLButtonElement>(null);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  const [selectedProjectType, setSelectedProjectType] = useState<'interior' | 'brand' | 'product' | 'vision_board' | 'general' | null>(null);
   
   // Lightbox State
   const [previewItem, setPreviewItem] = useState<{ base64: string; id: string } | null>(null);
@@ -254,7 +255,9 @@ const App: React.FC = () => {
         const updatedSessionId = snapshot.sessionId || sessionId;
         if (!projectId && updatedProjectId) {
           setProjectId(updatedProjectId);
-          window.localStorage.setItem(activeProjectStorageKey, updatedProjectId);
+          if (activeProjectStorageKey) {
+            window.localStorage.setItem(activeProjectStorageKey, updatedProjectId);
+          }
         }
         if (updatedSessionId) {
           setSessionId(updatedSessionId);
@@ -262,7 +265,7 @@ const App: React.FC = () => {
 
         const updatedSummary: ProjectSummary = {
           projectId: updatedProjectId,
-          sessionId: updatedSessionId,
+          sessionId: updatedSessionId || undefined,
           context: snapshot.context,
           createdAt: snapshot.createdAt,
           updatedAt: snapshot.updatedAt,
@@ -335,7 +338,7 @@ const App: React.FC = () => {
     setHistory([[]]);
     setHistoryIndex(0);
     projectHydratedRef.current = true;
-    navigate('/onboarding');
+    navigate('/select-type');
   };
 
   const openProject = async (projectIdToOpen: string) => {
@@ -496,7 +499,7 @@ const App: React.FC = () => {
     setMessages([{
       id: Date.now().toString(),
       role: 'assistant',
-      content: `SHORT-TERM MEMORY CLEARED.\n\nFixed Context:\n• Goal: ${context.goal}\n• Audience: ${context.audience}\n\nI am still observing the canvas and any active tags.`,
+      content: `SHORT-TERM MEMORY CLEARED.\n\nFixed Context:\n• Goal/Type: ${context.roomType}\n• Constraints: ${context.existingFurniture}\n\nI am still observing the canvas and any active tags.`,
       timestamp: Date.now()
     }]);
   };
@@ -737,7 +740,7 @@ const App: React.FC = () => {
   }
 
   const lastProjectId = activeProjectStorageKey ? window.localStorage.getItem(activeProjectStorageKey) : null;
-  const activeProjectTitle = context ? (context.projectName || context.goal || 'Untitled Project') : undefined;
+  const activeProjectTitle = context ? (context.projectName || context.roomType || 'Untitled Project') : undefined;
 
   return (
     <Routes>
@@ -770,10 +773,22 @@ const App: React.FC = () => {
         </div>
       } />
 
+      <Route path="/select-type" element={
+        <ProjectTypeSelector
+          onSelect={(type) => {
+            setSelectedProjectType(type);
+            navigate('/onboarding');
+          }}
+          onCancel={() => navigate('/')}
+        />
+      } />
+
       <Route path="/onboarding" element={
-        <Onboarding onComplete={(nextContext) => {
-          setContext(nextContext);
-          setMessages([]);
+        <Onboarding 
+          projectType={selectedProjectType || 'general'}
+          onComplete={(nextContext) => {
+            setContext({ ...nextContext, projectType: selectedProjectType || 'general' });
+            setMessages([]);
           setCanvasElements([]);
           setHistory([[]]);
           setHistoryIndex(0);
