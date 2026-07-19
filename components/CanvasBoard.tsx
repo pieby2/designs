@@ -7,6 +7,9 @@ interface CanvasBoardProps {
   setElements: React.Dispatch<React.SetStateAction<CanvasElement[]>>;
   tool: 'select' | 'pan' | 'focus' | 'text' | 'pencil' | 'rectangle' | 'ellipse' | 'arrow';
   setTool: (tool: 'select' | 'pan' | 'focus' | 'text' | 'pencil' | 'rectangle' | 'ellipse' | 'arrow') => void;
+    activeColor: string;
+  activeOpacity?: number;
+  activeStrokeWidth?: number;
   onRunFocus?: (id: string) => void;
   onElementChange?: () => void;
 }
@@ -18,7 +21,7 @@ export interface CanvasBoardHandle {
   zoomReset: () => void;
 }
 
-const CanvasBoard = memo(forwardRef<CanvasBoardHandle, CanvasBoardProps>(({ elements, setElements, tool, setTool, onRunFocus, onElementChange }, ref) => {
+const CanvasBoard = memo(forwardRef<CanvasBoardHandle, CanvasBoardProps>(({ elements, setElements, tool, setTool, activeColor, activeOpacity = 1, activeStrokeWidth = 3, onRunFocus, onElementChange }, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
@@ -374,6 +377,7 @@ const CanvasBoard = memo(forwardRef<CanvasBoardHandle, CanvasBoardProps>(({ elem
 
   const drawElement = (ctx: CanvasRenderingContext2D, el: CanvasElement) => {
     ctx.save();
+    ctx.globalAlpha = el.opacity ?? 1;
     if (el.type === 'image' && el.src) {
         let img = imageCache.current.get(el.src);
         if (!img) {
@@ -394,7 +398,7 @@ const CanvasBoard = memo(forwardRef<CanvasBoardHandle, CanvasBoardProps>(({ elem
         if (el.points.length < 2) { ctx.restore(); return; }
         ctx.beginPath();
         ctx.strokeStyle = el.color || '#D90429'; 
-        ctx.lineWidth = 3;
+        ctx.lineWidth = el.strokeWidth ?? 3;
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
         ctx.moveTo(el.points[0].x, el.points[0].y);
@@ -403,8 +407,8 @@ const CanvasBoard = memo(forwardRef<CanvasBoardHandle, CanvasBoardProps>(({ elem
         }
         ctx.stroke();
     } else if (el.type === 'shape') {
-        ctx.strokeStyle = '#D90429';
-        ctx.lineWidth = 3;
+        ctx.strokeStyle = el.color || '#D90429';
+        ctx.lineWidth = el.strokeWidth ?? 3;
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
 
@@ -432,7 +436,7 @@ const CanvasBoard = memo(forwardRef<CanvasBoardHandle, CanvasBoardProps>(({ elem
             ctx.lineTo(end.x - headLength * Math.cos(angle - Math.PI / 6), end.y - headLength * Math.sin(angle - Math.PI / 6));
             ctx.lineTo(end.x - headLength * Math.cos(angle + Math.PI / 6), end.y - headLength * Math.sin(angle + Math.PI / 6));
             ctx.lineTo(end.x, end.y);
-            ctx.fillStyle = '#D90429';
+            ctx.fillStyle = el.color || '#D90429';
             ctx.fill();
         }
     } else if (el.type === 'text' && el.text) {
@@ -440,7 +444,7 @@ const CanvasBoard = memo(forwardRef<CanvasBoardHandle, CanvasBoardProps>(({ elem
 
         const fontSize = el.fontSize || 24;
         ctx.font = `${fontSize}px 'Space Mono', monospace`;
-        ctx.fillStyle = '#000000'; 
+        ctx.fillStyle = el.color || '#000000'; 
         ctx.textBaseline = 'top'; 
         
         if (el.width && el.width > 0) {
@@ -527,10 +531,11 @@ const CanvasBoard = memo(forwardRef<CanvasBoardHandle, CanvasBoardProps>(({ elem
         elements.forEach(el => drawElement(ctx, el));
 
         // Draw Interactivity
+        ctx.globalAlpha = activeOpacity;
         if (tool === 'pencil' && currentPath.length > 0) {
             ctx.beginPath();
-            ctx.strokeStyle = '#D90429'; 
-            ctx.lineWidth = 3; 
+            ctx.strokeStyle = activeColor; 
+            ctx.lineWidth = activeStrokeWidth; 
             ctx.lineCap = 'round';
             ctx.lineJoin = 'round';
             ctx.moveTo(currentPath[0].x, currentPath[0].y);
@@ -546,8 +551,8 @@ const CanvasBoard = memo(forwardRef<CanvasBoardHandle, CanvasBoardProps>(({ elem
              const w = current.x - shapeStart.x;
              const h = current.y - shapeStart.y;
              
-             ctx.strokeStyle = '#D90429';
-             ctx.lineWidth = 3;
+             ctx.strokeStyle = activeColor;
+             ctx.lineWidth = activeStrokeWidth;
              ctx.lineCap = 'round';
              ctx.lineJoin = 'round';
 
@@ -571,7 +576,7 @@ const CanvasBoard = memo(forwardRef<CanvasBoardHandle, CanvasBoardProps>(({ elem
             const last = currentPath[currentPath.length - 1];
             const w = last.x - focusStart.x;
             const h = last.y - focusStart.y;
-            ctx.strokeStyle = '#D90429';
+            ctx.strokeStyle = activeColor;
             ctx.lineWidth = 1;
             ctx.setLineDash([4, 4]);
             ctx.strokeRect(focusStart.x, focusStart.y, w, h);
@@ -583,7 +588,7 @@ const CanvasBoard = memo(forwardRef<CanvasBoardHandle, CanvasBoardProps>(({ elem
              const w = last.x - textStart.x;
              const h = last.y - textStart.y;
              ctx.fillStyle = 'rgba(0, 0, 0, 0.05)';
-             ctx.strokeStyle = '#000000';
+             ctx.strokeStyle = activeColor;
              ctx.setLineDash([2, 2]);
              ctx.lineWidth = 1;
              ctx.fillRect(textStart.x, textStart.y, w, h);
@@ -591,6 +596,7 @@ const CanvasBoard = memo(forwardRef<CanvasBoardHandle, CanvasBoardProps>(({ elem
              ctx.setLineDash([]);
         }
 
+        ctx.globalAlpha = 1;
         // Draw Selections
         selectedElementIds.forEach(id => {
             const el = elements.find(e => e.id === id);
@@ -1018,7 +1024,9 @@ const CanvasBoard = memo(forwardRef<CanvasBoardHandle, CanvasBoardProps>(({ elem
                   shapeType: 'arrow',
                   x: 0, y: 0, 
                   points: [shapeStart, last],
-                  color: '#D90429'
+                  color: activeColor,
+                  opacity: activeOpacity,
+                  strokeWidth: activeStrokeWidth
               }]);
           } else if (Math.abs(w) > 5 && Math.abs(h) > 5) {
               setElements(prev => [...prev, {
@@ -1029,7 +1037,9 @@ const CanvasBoard = memo(forwardRef<CanvasBoardHandle, CanvasBoardProps>(({ elem
                   y: h > 0 ? shapeStart.y : last.y,
                   width: Math.abs(w),
                   height: Math.abs(h),
-                  color: '#D90429'
+                  color: activeColor,
+                  opacity: activeOpacity,
+                  strokeWidth: activeStrokeWidth
               }]);
           }
       }
@@ -1040,7 +1050,9 @@ const CanvasBoard = memo(forwardRef<CanvasBoardHandle, CanvasBoardProps>(({ elem
               type: 'stroke',
               x: 0, y: 0, 
               points: currentPath,
-              color: '#D90429'
+              color: activeColor,
+              opacity: activeOpacity,
+              strokeWidth: activeStrokeWidth
           }]);
       } else if (tool === 'focus' && focusStart && currentPath.length > 0) {
           const last = currentPath[currentPath.length - 1]; 
@@ -1234,7 +1246,8 @@ const CanvasBoard = memo(forwardRef<CanvasBoardHandle, CanvasBoardProps>(({ elem
                     y: worldPos.y,
                     text: text,
                     width: 300,
-                    fontSize: 24
+                                    fontSize: 24,
+                                    color: activeColor
                 }]);
                 setTimeout(() => onElementChange?.(), 0);
             }
@@ -1246,7 +1259,8 @@ const CanvasBoard = memo(forwardRef<CanvasBoardHandle, CanvasBoardProps>(({ elem
                 y: worldPos.y,
                 text: text,
                 width: 300,
-                fontSize: 24
+                fontSize: 24,
+                color: activeColor
             }]);
             setTimeout(() => onElementChange?.(), 0);
         }
@@ -1345,12 +1359,15 @@ const CanvasBoard = memo(forwardRef<CanvasBoardHandle, CanvasBoardProps>(({ elem
             onChange={(e) => {
                 setEditingText(prev => prev ? { ...prev, value: e.target.value } : null);
             }}
-            className="absolute bg-transparent text-black border border-black/50 p-0 outline-none overflow-hidden resize-none z-50"
+            className="absolute bg-transparent border border-black/50 p-0 outline-none overflow-hidden resize-none z-50"
             style={{
                 left: editInputPos.x,
                 top: editInputPos.y,
                 fontFamily: "'Space Mono', monospace",
                 fontSize: `${24 * camera.z}px`,
+                color: editingText.id
+                  ? (elements.find(el => el.id === editingText.id)?.color || activeColor)
+                  : activeColor,
                 width: `${(editingText.width || 300) * camera.z}px`,
                 lineHeight: 1.4,
                 whiteSpace: 'pre-wrap',

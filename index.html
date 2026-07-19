@@ -32,6 +32,35 @@
       .font-mono {
         font-family: 'Space Mono', monospace;
       }
+
+      @keyframes fadeSlideIn {
+        from { opacity: 0; transform: translateX(-6px); }
+        to   { opacity: 1; transform: translateX(0); }
+      }
+
+      /* Toolbar range inputs */
+      input[type=range] {
+        -webkit-appearance: none;
+        appearance: none;
+        background: transparent;
+      }
+      input[type=range]::-webkit-slider-runnable-track {
+        height: 4px;
+        border-radius: 2px;
+        background: #e5e5e5;
+      }
+      input[type=range]::-webkit-slider-thumb {
+        -webkit-appearance: none;
+        appearance: none;
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        background: #171717;
+        border: 2px solid #fff;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+        margin-top: -5px;
+        cursor: pointer;
+      }
     </style>
 <script type="importmap">
 {
@@ -50,7 +79,7 @@
 }
 </script>
 </head>
-  <body class="bg-[#E5E5E5] text-black overflow-hidden selection:bg-black selection:text-white">
+  <body class="bg-[#E5E5E5] text-black selection:bg-black selection:text-white">
     <div id="root"></div>
     <script type="module" src="/index.tsx"></script>
   </body>

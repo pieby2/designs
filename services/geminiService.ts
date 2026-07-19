@@ -1,4 +1,9 @@
 import { ProjectContext, AgentResponse, ChatMessage, StickerType } from "../types";
+import { getCurrentIdToken } from './firebaseAuth';
+
+const buildAuthHeaders = async () => ({
+  Authorization: `Bearer ${await getCurrentIdToken()}`,
+});
 
 export const suggestVibes = async (roomType: string, existingFurniture: string, desiredChanges: string): Promise<string> => {
   try {
@@ -6,6 +11,7 @@ export const suggestVibes = async (roomType: string, existingFurniture: string, 
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        ...(await buildAuthHeaders()),
       },
       body: JSON.stringify({ roomType, existingFurniture, desiredChanges }),
     });
@@ -35,6 +41,7 @@ export const agentTurn = async (
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        ...(await buildAuthHeaders()),
       },
       body: JSON.stringify({
         context,
@@ -69,6 +76,7 @@ export const generateArtifact = async (
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        ...(await buildAuthHeaders()),
       },
       body: JSON.stringify({
         technicalPrompt,

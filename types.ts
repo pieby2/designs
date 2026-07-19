@@ -36,6 +36,23 @@ export interface CanvasElement {
   rotation?: number;
   text?: string; // For text
   fontSize?: number;
+  opacity?: number;
+  strokeWidth?: number;
+}
+
+export interface ProjectSummary {
+  projectId: string;
+  sessionId?: string;
+  context: ProjectContext;
+  createdAt: number;
+  updatedAt: number;
+  ownerUid?: string;
+  ownerDisplayName?: string;
+  ownerEmail?: string;
+  ownerPhotoURL?: string;
+  sessionCount: number;
+  canvasElementCount: number;
+  messageCount: number;
 }
 
 export interface AgentResponse {

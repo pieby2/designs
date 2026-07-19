@@ -1,12 +1,14 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { ProjectContext } from '../types';
 import { ArrowRight, ArrowLeft, Plus, X, Paperclip, Cpu, Zap, Activity, Grid3X3, Disc, Move, Sparkles, Eye } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 
 interface OnboardingProps {
   onComplete: (context: ProjectContext) => void;
 }
 
 const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
+  const navigate = useNavigate();
   const [step, setStep] = useState<1 | 2>(1);
   const [formData, setFormData] = useState<ProjectContext>({
     projectName: '',
@@ -97,13 +99,13 @@ const Onboarding: React.FC<OnboardingProps> = ({ onComplete }) => {
           <div className="bg-[#E5E5E5]/80 backdrop-blur-md border border-white/50 pl-5 pr-1.5 py-1.5 rounded-full shadow-lg shadow-black/5 flex items-center gap-4 pointer-events-auto transition-all hover:bg-white/90 group hover:scale-[1.01] duration-300">
                
                {/* Left: App Name */}
-               <div className="flex items-center gap-3">
+               <button onClick={() => navigate('/')} className="flex items-center gap-3 outline-none">
                    <div className="relative flex h-2 w-2">
                       <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-black opacity-75"></span>
                       <span className="relative inline-flex rounded-full h-2 w-2 bg-black"></span>
                    </div>
-                   <span className="font-mono text-xs tracking-[0.2em] uppercase text-black font-medium group-hover:tracking-[0.25em] transition-all">Interior AI</span>
-               </div>
+                   <span className="font-mono text-xs tracking-[0.2em] uppercase text-black font-medium group-hover:tracking-[0.25em] transition-all">Articulate</span>
+               </button>
 
                {/* Divider */}
                <div className="h-4 w-px bg-neutral-300"></div>

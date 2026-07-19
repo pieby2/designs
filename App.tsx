@@ -1,17 +1,37 @@
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import Onboarding from './components/Onboarding';
 import CanvasBoard, { CanvasBoardHandle } from './components/CanvasBoard';
 import ChatPanel from './components/ChatPanel';
-import { ProjectContext, ChatMessage, CanvasElement, StickerType } from './types';
+import AuthScreen from './components/AuthScreen';
+import WorkspaceNavbar from './components/WorkspaceNavbar';
+import DashboardScreen from './components/DashboardScreen';
+import ProfileModal from './components/ProfileModal';
+import { ProjectContext, ChatMessage, CanvasElement, StickerType, ProjectSummary } from './types';
 import { agentTurn, generateArtifact } from './services/geminiService';
-import { MousePointer2, Hand, PenTool, Scan, Type, X, Undo, Redo, Circle, Square, MoveRight, Tag, Heart, Ban, PaintRoller, Box, Download } from 'lucide-react';
+import { createProjectSnapshot, loadProjectSnapshot, listProjectSnapshots, saveProjectSnapshot } from './services/firebaseProjectService.ts';
+import { signOutUser, watchAuthState } from './services/firebaseAuth.ts';
+import { MousePointer2, Hand, PenTool, Scan, Type, X, Undo, Redo, Circle, Square, MoveRight, Tag, Heart, Ban, PaintRoller, Box, Download, Palette, Minus, Plus, ChevronDown } from 'lucide-react';
+import { Routes, Route, useNavigate, useLocation, Navigate } from 'react-router-dom';
+import type { User } from 'firebase/auth';
 
 const HISTORY_LIMIT = 50;
+const PROJECT_STORAGE_KEY = 'designs.firebase.projectId';
+type ScreenMode = 'dashboard' | 'onboarding' | 'editor';
 
 const App: React.FC = () => {
   const [context, setContext] = useState<ProjectContext | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [authUser, setAuthUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const navigate = useNavigate();
+  const location = useLocation();
+  const screen: ScreenMode = location.pathname.includes('/editor') ? 'editor' : (location.pathname === '/onboarding' ? 'onboarding' : 'dashboard');
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [dashboardLoading, setDashboardLoading] = useState(false);
+  const [dashboardError, setDashboardError] = useState<string | null>(null);
+  const [showProfileModal, setShowProfileModal] = useState(false);
   
   // Canvas State & History
   const [canvasElements, setCanvasElements] = useState<CanvasElement[]>([]);
@@ -21,9 +41,19 @@ const App: React.FC = () => {
   const processedTrigger = useRef(0);
 
   const [tool, setTool] = useState<'select' | 'pan' | 'focus' | 'text' | 'pencil' | 'rectangle' | 'ellipse' | 'arrow'>('select');
+  const [activeColor, setActiveColor] = useState('#1b198e');
+  const [activeOpacity, setActiveOpacity] = useState(1);
+  const [activeStrokeWidth, setActiveStrokeWidth] = useState(3);
+  const [showColorPanel, setShowColorPanel] = useState(false);
+  const [colorPanelPos, setColorPanelPos] = useState<{ top: number; left: number } | null>(null);
   const [processingStatus, setProcessingStatus] = useState<string | null>(null);
   const [showStickerMenu, setShowStickerMenu] = useState(false);
+  const [stickerMenuPos, setStickerMenuPos] = useState<{ top: number; left: number } | null>(null);
   const [isChatOpen, setIsChatOpen] = useState(true);
+  const colorPanelRef = useRef<HTMLDivElement>(null);
+  const colorSwatchBtnRef = useRef<HTMLButtonElement>(null);
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(null);
   
   // Lightbox State
   const [previewItem, setPreviewItem] = useState<{ base64: string; id: string } | null>(null);
@@ -31,49 +61,42 @@ const App: React.FC = () => {
   const canvasRef = useRef<CanvasBoardHandle>(null);
   const stickerMenuRef = useRef<HTMLDivElement>(null);
   const stickerBtnRef = useRef<HTMLButtonElement>(null);
+  const projectHydratedRef = useRef(false);
+  const projectSaveTimerRef = useRef<number | null>(null);
+  const projectCreateInFlightRef = useRef(false);
+  const firebaseUnavailableRef = useRef(false);
+  const screenRef = useRef<ScreenMode>('dashboard');
+
+  const activeProjectStorageKey = authUser ? `${PROJECT_STORAGE_KEY}.${authUser.uid}` : null;
 
   // Derived state for Focus Zone UI
   const hasFocusZones = (canvasElements || []).some(el => el.type === 'focus');
-
   // Helper: Save current state to history
   const saveToHistory = useCallback((elements: CanvasElement[]) => {
     if (!elements) return;
     setHistory(prev => {
       const newHistory = prev.slice(0, historyIndex + 1);
       const latest = newHistory[newHistory.length - 1];
-      
-      // Prevent duplicates
+
       if (latest && JSON.stringify(latest) === JSON.stringify(elements)) return newHistory;
 
       const updated = [...newHistory, elements];
       if (updated.length > HISTORY_LIMIT) updated.shift();
       return updated;
     });
-    setHistoryIndex(prev => {
-       return (prev + 1 >= HISTORY_LIMIT) ? HISTORY_LIMIT - 1 : prev + 1;
-    });
+    setHistoryIndex(prev => (prev + 1 >= HISTORY_LIMIT ? HISTORY_LIMIT - 1 : prev + 1));
   }, [historyIndex]);
 
-  // Handle undo/redo interaction end
   const handleCanvasInteractionEnd = useCallback(() => {
-     setHistoryTrigger(prev => prev + 1);
+    setHistoryTrigger(prev => prev + 1);
   }, []);
 
-  // Effect to save history only when trigger increments (ensures we save the FRESH state after render)
-  useEffect(() => {
-      if (historyTrigger > processedTrigger.current) {
-          saveToHistory(canvasElements);
-          processedTrigger.current = historyTrigger;
-      }
-  }, [historyTrigger, canvasElements, saveToHistory]);
-
-  // Wrapper to update elements AND save history (for AI or non-interactive updates)
   const updateElementsWithHistory = (newElements: CanvasElement[] | ((prev: CanvasElement[]) => CanvasElement[])) => {
-      setCanvasElements(prev => {
-          const resolved = typeof newElements === 'function' ? newElements(prev) : newElements;
-          saveToHistory(resolved);
-          return resolved;
-      });
+    setCanvasElements(prev => {
+      const resolved = typeof newElements === 'function' ? newElements(prev) : newElements;
+      saveToHistory(resolved);
+      return resolved;
+    });
   };
 
   const handleUndo = useCallback(() => {
@@ -82,9 +105,8 @@ const App: React.FC = () => {
       setHistoryIndex(newIndex);
       const previousState = history[newIndex];
       if (previousState) {
-          setCanvasElements(previousState);
-          // Sync trigger to prevent re-saving logic loop if needed, though check logic handles it
-          processedTrigger.current = historyTrigger; 
+        setCanvasElements(previousState);
+        processedTrigger.current = historyTrigger;
       }
     }
   }, [history, historyIndex, historyTrigger]);
@@ -95,42 +117,259 @@ const App: React.FC = () => {
       setHistoryIndex(newIndex);
       const nextState = history[newIndex];
       if (nextState) {
-          setCanvasElements(nextState);
-          processedTrigger.current = historyTrigger;
+        setCanvasElements(nextState);
+        processedTrigger.current = historyTrigger;
       }
     }
   }, [history, historyIndex, historyTrigger]);
 
-  // Click Outside Handler for Sticker Menu
   useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (
-        showStickerMenu &&
-        stickerMenuRef.current &&
-        !stickerMenuRef.current.contains(event.target as Node) &&
-        stickerBtnRef.current &&
-        !stickerBtnRef.current.contains(event.target as Node)
-      ) {
-        setShowStickerMenu(false);
+    screenRef.current = screen;
+  }, [screen]);
+
+  // Smart viewport-aware flyout positioning
+  const calcFlyoutPos = (btnRef: React.RefObject<HTMLButtonElement | null>, panelW: number, panelH: number) => {
+    const btn = btnRef.current;
+    if (!btn) return { top: 100, left: 80 };
+    const r = btn.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const MARGIN = 8;
+    // Prefer opening to the right of the toolbar
+    let left = r.right + 8;
+    if (left + panelW > vw - MARGIN) left = r.left - panelW - 8;
+    left = Math.max(MARGIN, Math.min(left, vw - panelW - MARGIN));
+    // Align top with button; clamp so panel never goes below viewport
+    let top = r.top;
+    if (top + panelH > vh - MARGIN) top = vh - panelH - MARGIN;
+    top = Math.max(MARGIN, top);
+    return { top, left };
+  };
+
+  const openColorPanel = () => {
+    if (showColorPanel) { setShowColorPanel(false); return; }
+    // Approximate panel height (color picker panel ~520px)
+    const pos = calcFlyoutPos(colorSwatchBtnRef as React.RefObject<HTMLButtonElement | null>, 272, 520);
+    setColorPanelPos(pos);
+    setShowColorPanel(true);
+  };
+
+  const openStickerMenu = () => {
+    if (showStickerMenu) { setShowStickerMenu(false); return; }
+    // Sticker menu ~220px tall
+    const pos = calcFlyoutPos(stickerBtnRef as React.RefObject<HTMLButtonElement | null>, 248, 220);
+    setStickerMenuPos(pos);
+    setShowStickerMenu(true);
+  };
+
+
+  useEffect(() => {
+    const handleGlobalWheel = (e: WheelEvent) => {
+      if (e.ctrlKey) e.preventDefault();
+    };
+
+    document.addEventListener('wheel', handleGlobalWheel, { passive: false });
+    return () => document.removeEventListener('wheel', handleGlobalWheel);
+  }, []);
+
+  useEffect(() => watchAuthState(user => {
+    setAuthUser(user);
+    setAuthReady(true);
+
+    if (!user) {
+      projectHydratedRef.current = false;
+      projectCreateInFlightRef.current = false;
+      setProjectId(null);
+      setSessionId(null);
+      setContext(null);
+      setMessages([]);
+      setCanvasElements([]);
+      setHistory([[]]);
+      setHistoryIndex(0);
+      setProjects([]);
+      setDashboardError(null);
+      setDashboardLoading(false);
+      setShowProfileModal(false);
+      navigate('/', { replace: true });
+      return;
+    }
+
+    projectHydratedRef.current = true;
+  }), [navigate]);
+
+  useEffect(() => {
+    if (!authReady || !authUser) return;
+
+    let isMounted = true;
+
+    const loadDashboardProjects = async () => {
+      setDashboardLoading(true);
+      setDashboardError(null);
+
+      try {
+        const items = await listProjectSnapshots();
+        if (!isMounted) return;
+        setProjects(items);
+        projectHydratedRef.current = true;
+      } catch (error) {
+        if (!isMounted) return;
+        setDashboardError(error instanceof Error ? error.message : 'Unable to load projects.');
+      } finally {
+        if (isMounted) setDashboardLoading(false);
       }
     };
 
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
-  }, [showStickerMenu]);
+    void loadDashboardProjects();
 
-  // Prevent Browser Zoom (Global)
+    return () => {
+      isMounted = false;
+    };
+  }, [authReady, authUser]);
+
   useEffect(() => {
-      const handleGlobalWheel = (e: WheelEvent) => {
-          if (e.ctrlKey) {
-              e.preventDefault();
+    if (!projectHydratedRef.current || !context || firebaseUnavailableRef.current || !authUser || screen !== 'editor') return;
+
+    if (projectSaveTimerRef.current) {
+      window.clearTimeout(projectSaveTimerRef.current);
+    }
+
+    if (!projectId && projectCreateInFlightRef.current) {
+      return;
+    }
+
+    projectSaveTimerRef.current = window.setTimeout(() => {
+      const payload = { context, canvasElements, messages, sessionId };
+
+      const persist = projectId
+        ? saveProjectSnapshot(projectId, payload)
+        : (() => {
+            projectCreateInFlightRef.current = true;
+            return createProjectSnapshot(payload).finally(() => {
+              projectCreateInFlightRef.current = false;
+            });
+          })();
+
+      persist.then(snapshot => {
+        const updatedProjectId = snapshot.projectId;
+        const updatedSessionId = snapshot.sessionId || sessionId;
+        if (!projectId && updatedProjectId) {
+          setProjectId(updatedProjectId);
+          window.localStorage.setItem(activeProjectStorageKey, updatedProjectId);
+        }
+        if (updatedSessionId) {
+          setSessionId(updatedSessionId);
+        }
+
+        const updatedSummary: ProjectSummary = {
+          projectId: updatedProjectId,
+          sessionId: updatedSessionId,
+          context: snapshot.context,
+          createdAt: snapshot.createdAt,
+          updatedAt: snapshot.updatedAt,
+          ownerUid: authUser.uid,
+          ownerDisplayName: authUser.displayName || undefined,
+          ownerEmail: authUser.email || undefined,
+          ownerPhotoURL: authUser.photoURL || undefined,
+          sessionCount: snapshot.sessionCount || 1,
+          canvasElementCount: snapshot.canvasElements.length,
+          messageCount: snapshot.messages.length,
+        };
+
+        setProjects(prev => {
+          const existingIndex = prev.findIndex(item => item.projectId === updatedProjectId);
+          if (existingIndex >= 0) {
+            const next = [...prev];
+            next[existingIndex] = updatedSummary;
+            return next.sort((a, b) => b.updatedAt - a.updatedAt);
           }
-      };
-      document.addEventListener('wheel', handleGlobalWheel, { passive: false });
-      return () => document.removeEventListener('wheel', handleGlobalWheel);
-  }, []);
+
+          return [updatedSummary, ...prev].sort((a, b) => b.updatedAt - a.updatedAt);
+        });
+      }).catch((error: unknown) => {
+        if (error instanceof Error && error.message.includes('Firebase project storage is not configured')) {
+          firebaseUnavailableRef.current = true;
+          return;
+        }
+        console.error('Failed to persist Firebase project snapshot', error);
+      });
+    }, 350);
+
+    return () => {
+      if (projectSaveTimerRef.current) {
+        window.clearTimeout(projectSaveTimerRef.current);
+      }
+    };
+  }, [activeProjectStorageKey, authUser, canvasElements, context, messages, projectId, screen, sessionId]);
+
+  const handleSignOut = async () => {
+    if (projectSaveTimerRef.current) {
+      window.clearTimeout(projectSaveTimerRef.current);
+    }
+    if (activeProjectStorageKey) {
+      window.localStorage.removeItem(activeProjectStorageKey);
+    }
+    setShowProfileModal(false);
+    setProjectId(null);
+    setSessionId(null);
+    setContext(null);
+    setMessages([]);
+    setCanvasElements([]);
+    navigate('/');
+    await signOutUser();
+  };
+
+  const handleNavigateDashboard = () => {
+    setDashboardError(null);
+    setShowProfileModal(false);
+    navigate('/');
+  };
+
+  const handleCreateProject = () => {
+    setDashboardError(null);
+    setShowProfileModal(false);
+    setProjectId(null);
+    setSessionId(null);
+    setContext(null);
+    setMessages([]);
+    setCanvasElements([]);
+    setHistory([[]]);
+    setHistoryIndex(0);
+    projectHydratedRef.current = true;
+    navigate('/onboarding');
+  };
+
+  const openProject = async (projectIdToOpen: string) => {
+    setDashboardLoading(true);
+    setDashboardError(null);
+
+    try {
+      const snapshot = await loadProjectSnapshot(projectIdToOpen);
+      setProjectId(projectIdToOpen);
+      setSessionId(snapshot.sessionId || null);
+      setContext(snapshot.context);
+      setMessages(snapshot.messages || []);
+      setCanvasElements(snapshot.canvasElements || []);
+      setHistory([snapshot.canvasElements || []]);
+      setHistoryIndex(0);
+      projectHydratedRef.current = true;
+      navigate('/editor');
+      if (activeProjectStorageKey) {
+        window.localStorage.setItem(activeProjectStorageKey, projectIdToOpen);
+      }
+    } catch (error) {
+      setDashboardError(error instanceof Error ? error.message : 'Unable to open project.');
+    } finally {
+      setDashboardLoading(false);
+    }
+  };
+
+  const handleResumeLastProject = () => {
+    if (!activeProjectStorageKey) return;
+    const lastProjectId = window.localStorage.getItem(activeProjectStorageKey);
+    if (lastProjectId) {
+      void openProject(lastProjectId);
+    }
+  };
 
   // Initialize welcome message when context is set
   useEffect(() => {
@@ -471,7 +710,7 @@ const App: React.FC = () => {
 
   const clearFocusZones = (e: React.MouseEvent) => {
       e.stopPropagation();
-      updateElementsWithHistory(prev => (prev || []).filter(el => el.type !== 'focus'));
+      updateElementsWithHistory((prev: CanvasElement[]) => prev.filter((el: CanvasElement) => el.type !== 'focus'));
   };
 
   const handleStickerDragStart = (e: React.DragEvent, type: StickerType) => {
@@ -483,232 +722,545 @@ const App: React.FC = () => {
       setShowStickerMenu(false);
   };
 
-  if (!context) {
-    return <Onboarding onComplete={setContext} />;
+  if (!authReady) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#d9d9d9] text-black">
+        <div className="rounded-full border border-black/10 bg-white/80 px-5 py-3 font-mono text-xs uppercase tracking-[0.22em] shadow-sm">
+          Loading secure session...
+        </div>
+      </div>
+    );
   }
 
+  if (!authUser) {
+    return <AuthScreen />;
+  }
+
+  const lastProjectId = activeProjectStorageKey ? window.localStorage.getItem(activeProjectStorageKey) : null;
+  const activeProjectTitle = context ? (context.projectName || context.goal || 'Untitled Project') : undefined;
+
   return (
-    <div className="relative w-screen h-screen bg-[#E5E5E5] overflow-hidden font-sans">
-      
-      {/* Layer 0: Infinite Canvas */}
-      <div className="absolute inset-0 z-0">
-        <CanvasBoard 
-          ref={canvasRef}
-          elements={canvasElements || []} 
-          setElements={setCanvasElements} 
-          tool={tool} 
-          setTool={setTool}
-          onRunFocus={handleRunFocus}
-          onElementChange={handleCanvasInteractionEnd}
-        />
-      </div>
+    <Routes>
+      <Route path="/" element={
+        <div className="min-h-screen bg-[#E5E5E5] font-sans text-black">
+          <WorkspaceNavbar
+            user={authUser}
+            currentView="dashboard"
+            onNavigateDashboard={handleNavigateDashboard}
+            onCreateProject={handleCreateProject}
+            onOpenProfile={() => setShowProfileModal(true)}
+            onSignOut={handleSignOut}
+          />
+          <DashboardScreen
+            user={authUser}
+            projects={projects}
+            lastProjectId={lastProjectId}
+            loading={dashboardLoading}
+            error={dashboardError}
+            onCreateProject={handleCreateProject}
+            onOpenProject={openProject}
+            onResumeLastProject={handleResumeLastProject}
+          />
+          <ProfileModal
+            user={authUser}
+            open={showProfileModal}
+            onClose={() => setShowProfileModal(false)}
+            onSignOut={handleSignOut}
+          />
+        </div>
+      } />
 
-      {/* Layer 1: Floating Toolbar (Top Center) */}
-      <div className="absolute top-6 left-1/2 -translate-x-1/2 z-50 pointer-events-none">
-        <div className="pointer-events-auto bg-white/90 backdrop-blur-md rounded-full shadow-xl shadow-black/5 border border-neutral-200 flex items-center p-1.5 gap-1">
-          {/* ... Toolbar Buttons ... */}
-          <button
-            onClick={() => setTool('select')}
-            className={`p-2.5 rounded-full transition-all ${tool === 'select' ? 'bg-black text-white' : 'text-neutral-500 hover:bg-neutral-100 hover:text-black'}`}
-            title="Selection (V)"
-          >
-            <MousePointer2 className="w-4 h-4" />
-          </button>
-          <button
-            onClick={() => setTool('pan')}
-            className={`p-2.5 rounded-full transition-all ${tool === 'pan' ? 'bg-black text-white' : 'text-neutral-500 hover:bg-neutral-100 hover:text-black'}`}
-            title="Pan (Space / H)"
-          >
-            <Hand className="w-4 h-4" />
-          </button>
-          <div className="w-px h-5 bg-neutral-200 mx-1"></div>
+      <Route path="/onboarding" element={
+        <Onboarding onComplete={(nextContext) => {
+          setContext(nextContext);
+          setMessages([]);
+          setCanvasElements([]);
+          setHistory([[]]);
+          setHistoryIndex(0);
+          setProjectId(null);
+          navigate('/editor');
+        }} />
+      } />
+
+      <Route path="/editor" element={
+        !context ? <Navigate to="/" replace /> : (
+        <div className="relative h-screen w-screen overflow-hidden bg-[#E5E5E5] font-sans text-black">
+          <WorkspaceNavbar
+            user={authUser}
+            currentView="editor"
+            activeProjectTitle={activeProjectTitle}
+            onNavigateDashboard={handleNavigateDashboard}
+            onCreateProject={handleCreateProject}
+            onOpenProfile={() => setShowProfileModal(true)}
+            onSignOut={handleSignOut}
+          />
           
-          {/* Drawing Tools */}
-          <div className="flex items-center bg-neutral-100/50 rounded-full px-1">
-              <button
-                onClick={() => setTool('pencil')}
-                className={`p-2 rounded-full transition-all ${tool === 'pencil' ? 'bg-red-600 text-white shadow-sm' : 'text-neutral-500 hover:text-red-600'}`}
-                title="Pencil (P)"
-              >
-                <PenTool className="w-4 h-4" />
-              </button>
-              <button
-                onClick={() => setTool('rectangle')}
-                className={`p-2 rounded-full transition-all ${tool === 'rectangle' ? 'bg-red-600 text-white shadow-sm' : 'text-neutral-500 hover:text-red-600'}`}
-                title="Rectangle (R)"
-              >
-                <Square className="w-4 h-4" />
-              </button>
-              <button
-                onClick={() => setTool('ellipse')}
-                className={`p-2 rounded-full transition-all ${tool === 'ellipse' ? 'bg-red-600 text-white shadow-sm' : 'text-neutral-500 hover:text-red-600'}`}
-                title="Ellipse (O)"
-              >
-                <Circle className="w-4 h-4" />
-              </button>
-              <button
-                onClick={() => setTool('arrow')}
-                className={`p-2 rounded-full transition-all ${tool === 'arrow' ? 'bg-red-600 text-white shadow-sm' : 'text-neutral-500 hover:text-red-600'}`}
-                title="Arrow (A)"
-              >
-                <MoveRight className="w-4 h-4" />
-              </button>
-              <button
-                onClick={() => setTool('text')}
-                className={`p-2 rounded-full transition-all ${tool === 'text' ? 'bg-black text-white shadow-sm' : 'text-neutral-500 hover:text-black'}`}
-                title="Text (T)"
-              >
-                <Type className="w-4 h-4" />
-              </button>
+          {/* Layer 0: Infinite Canvas */}
+          <div className="absolute inset-x-0 top-16 bottom-0 z-0">
+            <CanvasBoard 
+              ref={canvasRef}
+              elements={canvasElements || []} 
+              setElements={setCanvasElements} 
+              tool={tool} 
+              setTool={setTool}
+              activeColor={activeColor}
+              activeOpacity={activeOpacity}
+              activeStrokeWidth={activeStrokeWidth}
+              onRunFocus={handleRunFocus}
+              onElementChange={handleCanvasInteractionEnd}
+            />
           </div>
 
-          <div className="w-px h-5 bg-neutral-200 mx-1"></div>
-          
-          {/* Semantic Stickers Tool */}
-          <div className="relative">
-              <button
-                ref={stickerBtnRef}
-                onClick={() => setShowStickerMenu(!showStickerMenu)}
-                className={`p-2.5 rounded-full transition-all ${showStickerMenu ? 'bg-black text-white' : 'text-neutral-500 hover:bg-neutral-100 hover:text-black'}`}
-                title="Semantic Stickers"
-              >
-                <Tag className="w-4 h-4" />
-              </button>
-              
-              {showStickerMenu && (
-                  <div 
-                    ref={stickerMenuRef}
-                    className="absolute top-14 left-1/2 -translate-x-1/2 bg-white rounded-xl shadow-xl border border-black/5 p-3 flex flex-col gap-1 w-64 items-start animate-in fade-in zoom-in duration-200 z-50"
-                  >
-                      <div className="px-2 py-1 text-[10px] font-mono uppercase text-neutral-400 tracking-widest w-full border-b border-black/5 mb-1">
-                          Semantic Tags
-                      </div>
-                      {[
-                          { type: 'heart', Icon: Heart, label: 'Reinforce', desc: 'More like this', color: 'text-red-500' },
-                          { type: 'cross', Icon: Ban, label: 'Avoid', desc: 'Less like this', color: 'text-red-600' },
-                          { type: 'roller', Icon: PaintRoller, label: 'Style Only', desc: 'Rendering & Color', color: 'text-blue-600' },
-                          { type: 'cube', Icon: Box, label: 'Object Lock', desc: 'Keep character/object', color: 'text-purple-600' }
-                      ].map(s => (
-                          <div 
-                            key={s.type}
-                            draggable
-                            onDragStart={(e) => handleStickerDragStart(e, s.type as StickerType)}
-                            onDragEnd={handleStickerDragEnd}
-                            className="w-full flex items-center gap-3 p-2 hover:bg-neutral-50 rounded-lg cursor-grab active:cursor-grabbing group transition-colors"
-                          >
-                              <div className={`w-8 h-8 flex items-center justify-center bg-white border border-neutral-100 rounded-md shadow-sm group-hover:shadow-md transition-all`}>
-                                  <s.Icon size={16} className={s.color} />
-                              </div>
-                              <div className="flex flex-col">
-                                  <span className="text-xs font-medium text-neutral-800">{s.label}</span>
-                                  <span className="text-[10px] text-neutral-500">{s.desc}</span>
-                              </div>
-                          </div>
-                      ))}
+          {/* Layer 1: Left Vertical Toolbar */}
+          {(() => {
+            const QUICK_COLORS = [
+              '#EF4444','#F97316','#EAB308','#22C55E','#06B6D4','#3B82F6','#8B5CF6','#EC4899',
+              '#000000','#374151','#6B7280','#D1D5DB','#ffffff','#7C3AED','#1D4ED8','#BE185D',
+            ];
+            const GRADIENTS = [
+              { label: 'Sunset',   colors: ['#F97316','#EF4444'] },
+              { label: 'Ocean',    colors: ['#06B6D4','#3B82F6'] },
+              { label: 'Forest',   colors: ['#22C55E','#065F46'] },
+              { label: 'Violet',   colors: ['#8B5CF6','#EC4899'] },
+              { label: 'Midnight', colors: ['#1E1B4B','#3B82F6'] },
+              { label: 'Blaze',    colors: ['#FCD34D','#EF4444'] },
+            ];
+            const isDrawingTool = ['pencil','rectangle','ellipse','arrow','text'].includes(tool);
+            void isDrawingTool; // reserved for future conditional UI
+
+            return (
+              <div className="absolute left-4 top-1/2 -translate-y-1/2 z-50 flex flex-col gap-2 pointer-events-none" style={{ top: 'calc(50% + 32px)' }}>
+                <div className="pointer-events-auto flex flex-col bg-white/90 backdrop-blur-xl rounded-2xl shadow-2xl shadow-black/10 border border-neutral-200/80 overflow-visible" style={{ width: '52px' }}>
+
+                  {/* Navigation tools */}
+                  <div className="flex flex-col items-center gap-0.5 p-1.5">
+                    {([
+                      { id: 'select', Icon: MousePointer2, label: 'Select (V)', accent: false },
+                      { id: 'pan',    Icon: Hand,          label: 'Pan (H)',    accent: false },
+                    ] as const).map(({ id, Icon, label, accent }) => (
+                      <button key={id} onClick={() => setTool(id)}
+                        title={label}
+                        className={`w-9 h-9 flex items-center justify-center rounded-xl transition-all ${
+                          tool === id ? 'bg-neutral-900 text-white shadow-md scale-105' : 'text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700'
+                        }`}
+                      >
+                        <Icon className="w-4 h-4" />
+                      </button>
+                    ))}
                   </div>
-              )}
-          </div>
 
-          <div className="flex items-center gap-1 pl-1">
-            <div className={`flex items-center transition-all duration-300 rounded-full ${hasFocusZones ? 'bg-red-50 pl-0 pr-1 gap-1' : ''}`}>
-                <button
-                onClick={() => setTool('focus')}
-                className={`p-2.5 rounded-full transition-all ${tool === 'focus' ? 'bg-black text-white' : hasFocusZones ? 'text-red-600 hover:bg-red-100' : 'text-neutral-500 hover:bg-neutral-100 hover:text-black'}`}
-                title="Focus Zone (F)"
-                >
-                <Scan className="w-4 h-4" />
-                </button>
-                {hasFocusZones && (
+                  <div className="mx-3 h-px bg-neutral-100" />
+
+                  {/* Drawing tools */}
+                  <div className="flex flex-col items-center gap-0.5 p-1.5">
+                    {([
+                      { id: 'pencil',    Icon: PenTool,    label: 'Pencil (P)' },
+                      { id: 'rectangle', Icon: Square,     label: 'Rectangle (R)' },
+                      { id: 'ellipse',   Icon: Circle,     label: 'Ellipse (O)' },
+                      { id: 'arrow',     Icon: MoveRight,  label: 'Arrow (A)' },
+                      { id: 'text',      Icon: Type,       label: 'Text (T)' },
+                    ] as const).map(({ id, Icon, label }) => (
+                      <button key={id} onClick={() => setTool(id)}
+                        title={label}
+                        className={`w-9 h-9 flex items-center justify-center rounded-xl transition-all ${
+                          tool === id
+                            ? 'bg-red-600 text-white shadow-md scale-105'
+                            : 'text-neutral-400 hover:bg-red-50 hover:text-red-600'
+                        }`}
+                      >
+                        <Icon className="w-4 h-4" />
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="mx-3 h-px bg-neutral-100" />
+
+                  {/* Focus Zone */}
+                  <div className="flex flex-col items-center gap-0.5 p-1.5">
                     <button
-                        onClick={clearFocusZones}
-                        className="p-1.5 hover:bg-red-200 text-red-500 hover:text-red-700 rounded-full transition-colors animate-in fade-in slide-in-from-left-2 duration-200"
-                        title="Clear All Focus Zones"
+                      onClick={() => setTool('focus')}
+                      title="Focus Zone (F)"
+                      className={`w-9 h-9 flex items-center justify-center rounded-xl transition-all ${
+                        tool === 'focus' ? 'bg-neutral-900 text-white shadow-md scale-105' : hasFocusZones ? 'text-red-600 hover:bg-red-50' : 'text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700'
+                      }`}
                     >
-                        <X className="w-3 h-3" />
+                      <Scan className="w-4 h-4" />
                     </button>
-                )}
-            </div>
-          </div>
-          <div className="w-px h-5 bg-neutral-200 mx-1"></div>
-          <div className="flex items-center">
-             <button onClick={handleUndo} disabled={historyIndex <= 0} className="p-2.5 rounded-full text-neutral-500 hover:bg-neutral-100 hover:text-black disabled:opacity-30">
-                 <Undo className="w-4 h-4" />
-             </button>
-             <button onClick={handleRedo} disabled={historyIndex >= history.length - 1} className="p-2.5 rounded-full text-neutral-500 hover:bg-neutral-100 hover:text-black disabled:opacity-30">
-                 <Redo className="w-4 h-4" />
-             </button>
-          </div>
-        </div>
-      </div>
+                    {hasFocusZones && (
+                      <button onClick={clearFocusZones} title="Clear Focus Zones"
+                        className="w-9 h-9 flex items-center justify-center rounded-xl text-red-400 hover:bg-red-50 hover:text-red-600 transition-all"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
 
-      {/* Layer 2: Status Bar (Bottom Left) */}
-      <div className="absolute bottom-6 left-6 z-40 pointer-events-none">
-        <div className="font-mono text-[10px] uppercase tracking-widest text-neutral-400 select-none flex gap-6 bg-white/50 backdrop-blur-sm p-2 rounded-full px-4 border border-white/20">
-             <span className="flex items-center gap-2"><span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span>BRAIN: GEMINI 3 PRO</span>
-             <span className="text-black font-bold">PROJECT: {(context.projectName || 'UNTITLED').toUpperCase()}</span>
-             <span>OBJS: {(canvasElements || []).length}</span>
-             <span>TAGS: {(canvasElements || []).filter(e => e.sticker).length}</span>
-             <span>POS: X:{Math.round((canvasElements || [])[0]?.x || 0)} Y:{Math.round((canvasElements || [])[0]?.y || 0)}</span>
-        </div>
-      </div>
+                  <div className="mx-3 h-px bg-neutral-100" />
 
-      {/* Layer 3: Floating Chat Panel (Right) - Collapsible */}
-      <div 
-        className={`absolute top-6 right-8 z-50 transition-all duration-500 ease-[cubic-bezier(0.19,1,0.22,1)] flex flex-col items-end ${isChatOpen ? 'w-[350px]' : 'w-[160px]'}`}
-        style={{ height: isChatOpen ? 'calc(100vh - 64px)' : '48px' }}
-      >
-          {/* 
-            Optimized Animation Container:
-            - Always rounded-3xl (24px radius). At height=48px, this creates a perfect pill.
-            - Eliminates border-radius morphing artifacts.
-          */}
-          <div className={`w-full h-full shadow-2xl bg-white overflow-hidden ring-1 ring-black/5 rounded-3xl`}>
-             <ChatPanel 
-                 messages={messages} 
-                 onSendMessage={handleSendMessage} 
-                 onClearChat={handleClearChat}
-                 processingStatus={processingStatus}
-                 onPreview={handlePreview}
-                 isOpen={isChatOpen}
-                 onToggle={() => setIsChatOpen(!isChatOpen)}
-             />
-          </div>
-      </div>
+                  {/* Stickers */}
+                  <div className="flex flex-col items-center p-1.5">
+                    <button
+                      ref={stickerBtnRef}
+                      onClick={openStickerMenu}
+                      title="Semantic Tags"
+                      className={`w-9 h-9 flex items-center justify-center rounded-xl transition-all ${
+                        showStickerMenu ? 'bg-neutral-900 text-white' : 'text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700'
+                      }`}
+                    >
+                      <Tag className="w-4 h-4" />
+                    </button>
+                  </div>
 
-      {/* Layer 4: Full Screen Lightbox (Root Level) */}
-      {previewItem && (
-        <div 
-            className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 backdrop-blur-sm p-8 animate-in fade-in duration-200"
-            onClick={() => setPreviewItem(null)}
-        >
-            <button 
-                onClick={() => setPreviewItem(null)}
-                className="absolute top-6 right-6 text-white/50 hover:text-white transition-colors p-2 hover:bg-white/10 rounded-full"
-            >
-                <X size={24} />
-            </button>
+                  <div className="mx-3 h-px bg-neutral-100" />
 
-            <div 
-                className="relative flex flex-col items-center max-w-full max-h-full"
+                  {/* Undo / Redo */}
+                  <div className="flex flex-col items-center gap-0.5 p-1.5">
+                    <button onClick={handleUndo} disabled={historyIndex <= 0} title="Undo (⌘Z)"
+                      className="w-9 h-9 flex items-center justify-center rounded-xl text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700 disabled:opacity-25 transition-all"
+                    >
+                      <Undo className="w-4 h-4" />
+                    </button>
+                    <button onClick={handleRedo} disabled={historyIndex >= history.length - 1} title="Redo (⌘⇧Z)"
+                      className="w-9 h-9 flex items-center justify-center rounded-xl text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700 disabled:opacity-25 transition-all"
+                    >
+                      <Redo className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Color + Style Panel */}
+                <div className="pointer-events-auto flex flex-col bg-white/90 backdrop-blur-xl rounded-2xl shadow-2xl shadow-black/10 border border-neutral-200/80 p-2" style={{ width: '52px' }}>
+                  <div className="flex flex-col items-center">
+                    <button
+                      ref={colorSwatchBtnRef}
+                      onClick={openColorPanel}
+                      title="Color & Style"
+                      className="w-9 h-9 rounded-xl border-2 border-white shadow-md hover:scale-105 transition-all relative overflow-hidden"
+                      style={{ background: activeColor }}
+                    >
+                      <span className="absolute inset-0 flex items-end justify-end p-0.5">
+                        <ChevronDown className="w-2.5 h-2.5 text-white/70 drop-shadow" />
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* Portal flyouts — rendered at body level for correct viewport positioning */}
+          {showColorPanel && colorPanelPos && createPortal(
+            <>
+              {/* backdrop to close on outside click */}
+              <div
+                className="fixed inset-0 z-[90]"
+                onClick={() => setShowColorPanel(false)}
+              />
+              <div
+                ref={colorPanelRef}
+                className="fixed z-[91] w-68 bg-white rounded-2xl shadow-2xl border border-neutral-100 p-4 flex flex-col gap-3 overflow-y-auto"
+                style={{
+                  top: colorPanelPos.top,
+                  left: colorPanelPos.left,
+                  width: '272px',
+                  maxHeight: 'calc(100vh - 16px)',
+                  animation: 'fadeSlideIn 0.15s ease',
+                }}
                 onClick={e => e.stopPropagation()}
-            >
-                <img 
-                    src={`data:image/png;base64,${previewItem.base64}`} 
-                    alt="Full Preview" 
-                    className="max-w-[90vw] max-h-[85vh] object-contain shadow-2xl rounded-sm border border-white/10" 
-                />
-                
-                <button 
-                    onClick={() => handleDownloadArtifact(previewItem.base64, previewItem.id)}
-                    className="mt-6 flex items-center gap-2 bg-white text-black px-6 py-3 text-xs font-mono uppercase tracking-widest hover:bg-neutral-200 transition-colors rounded-full"
-                >
-                    <Download size={14} /> Download Asset
-                </button>
-            </div>
-        </div>
-      )}
+              >
+                {/* Header */}
+                <div className="flex items-center justify-between">
+                  <div className="text-[9px] font-mono uppercase tracking-widest text-neutral-400">Color &amp; Style</div>
+                  <button onClick={() => setShowColorPanel(false)} className="w-5 h-5 flex items-center justify-center rounded-md hover:bg-neutral-100 text-neutral-400 hover:text-neutral-700 transition-colors">
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
 
-    </div>
+                {/* Quick palette */}
+                <div>
+                  <div className="text-[9px] font-mono uppercase tracking-widest text-neutral-400 mb-2">Quick Colors</div>
+                  <div className="grid grid-cols-8 gap-1">
+                    {(['#EF4444','#F97316','#EAB308','#22C55E','#06B6D4','#3B82F6','#8B5CF6','#EC4899',
+                       '#000000','#374151','#6B7280','#D1D5DB','#ffffff','#7C3AED','#1D4ED8','#BE185D']).map(c => (
+                      <button
+                        key={c}
+                        onClick={() => setActiveColor(c)}
+                        title={c}
+                        className={`w-6 h-6 rounded-md border-2 transition-all hover:scale-110 ${
+                          activeColor === c ? 'border-neutral-900 scale-110' : 'border-transparent'
+                        } ${c === '#ffffff' ? 'border-neutral-200' : ''}`}
+                        style={{ backgroundColor: c }}
+                      />
+                    ))}
+                  </div>
+                </div>
+
+                {/* Gradients */}
+                <div>
+                  <div className="text-[9px] font-mono uppercase tracking-widest text-neutral-400 mb-2">Gradients</div>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {([
+                      { label: 'Sunset',   colors: ['#F97316','#EF4444'] },
+                      { label: 'Ocean',    colors: ['#06B6D4','#3B82F6'] },
+                      { label: 'Forest',   colors: ['#22C55E','#065F46'] },
+                      { label: 'Violet',   colors: ['#8B5CF6','#EC4899'] },
+                      { label: 'Midnight', colors: ['#1E1B4B','#3B82F6'] },
+                      { label: 'Blaze',    colors: ['#FCD34D','#EF4444'] },
+                    ]).map(g => (
+                      <div key={g.label} className="flex flex-col items-center gap-0.5">
+                        <button
+                          onClick={() => setActiveColor(g.colors[0])}
+                          title={g.label}
+                          className={`w-full h-8 rounded-lg hover:scale-105 transition-all border-2 overflow-hidden ${
+                            activeColor === g.colors[0] ? 'border-neutral-900' : 'border-transparent hover:border-neutral-300'
+                          }`}
+                          style={{ background: `linear-gradient(135deg, ${g.colors[0]}, ${g.colors[1]})` }}
+                        />
+                        <span className="text-[8px] font-mono text-neutral-400 uppercase tracking-wide">{g.label}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Custom color picker — full width prominent row */}
+                <div>
+                  <div className="text-[9px] font-mono uppercase tracking-widest text-neutral-400 mb-2">Custom Color</div>
+                  <label className="flex items-center gap-3 p-2 rounded-xl border-2 border-neutral-200 hover:border-neutral-400 transition-colors cursor-pointer group">
+                    <div className="relative w-10 h-10 rounded-lg overflow-hidden flex-shrink-0 shadow-sm">
+                      <input
+                        type="color"
+                        id="canvas-color-input"
+                        value={activeColor}
+                        onChange={(e) => setActiveColor(e.target.value)}
+                        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                        aria-label="Custom color picker"
+                      />
+                      <span className="absolute inset-0" style={{ background: activeColor }} />
+                      <span className="absolute inset-0 flex items-center justify-center">
+                        <Palette className="w-4 h-4 text-white drop-shadow" />
+                      </span>
+                    </div>
+                    <div className="flex flex-col flex-1 min-w-0">
+                      <span className="text-[10px] font-mono text-neutral-500 uppercase tracking-widest mb-1">Click to open picker</span>
+                      <input
+                        type="text"
+                        value={activeColor}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          if (/^#[0-9a-fA-F]{0,6}$/.test(v)) setActiveColor(v);
+                        }}
+                        onClick={e => e.stopPropagation()}
+                        maxLength={7}
+                        className="w-full text-[11px] font-mono bg-neutral-50 border border-neutral-200 rounded-lg px-2 py-1 text-neutral-700 focus:outline-none focus:border-neutral-400 uppercase"
+                        placeholder="#000000"
+                      />
+                    </div>
+                    <div className="w-6 h-6 rounded-md flex-shrink-0 border border-neutral-200 shadow-sm" style={{ background: activeColor }} />
+                  </label>
+                </div>
+
+                {/* Stroke width */}
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="text-[9px] font-mono uppercase tracking-widest text-neutral-400">Stroke Width</div>
+                    <span className="text-[10px] font-mono text-neutral-600 font-semibold">{activeStrokeWidth}px</span>
+                  </div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <button onClick={() => setActiveStrokeWidth(w => Math.max(1, w - 1))} className="w-6 h-6 flex items-center justify-center rounded-md bg-neutral-100 hover:bg-neutral-200 text-neutral-600 transition-colors">
+                      <Minus className="w-3 h-3" />
+                    </button>
+                    <input
+                      type="range" min={1} max={30} value={activeStrokeWidth}
+                      onChange={e => setActiveStrokeWidth(Number(e.target.value))}
+                      className="flex-1 accent-neutral-800"
+                    />
+                    <button onClick={() => setActiveStrokeWidth(w => Math.min(30, w + 1))} className="w-6 h-6 flex items-center justify-center rounded-md bg-neutral-100 hover:bg-neutral-200 text-neutral-600 transition-colors">
+                      <Plus className="w-3 h-3" />
+                    </button>
+                  </div>
+                  <div className="flex gap-1">
+                    {[1,2,4,8,16].map(w => (
+                      <button
+                        key={w}
+                        onClick={() => setActiveStrokeWidth(w)}
+                        title={`${w}px`}
+                        className={`flex-1 flex items-center justify-center h-6 rounded-md transition-all ${
+                          activeStrokeWidth === w ? 'bg-neutral-900' : 'bg-neutral-100 hover:bg-neutral-200'
+                        }`}
+                      >
+                        <div className={`rounded-full ${activeStrokeWidth === w ? 'bg-white' : 'bg-neutral-500'}`}
+                          style={{ width: `${Math.min(w * 2, 20)}px`, height: `${Math.min(w, 10)}px` }}
+                        />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Opacity */}
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="text-[9px] font-mono uppercase tracking-widest text-neutral-400">Opacity</div>
+                    <span className="text-[10px] font-mono text-neutral-600 font-semibold">{Math.round(activeOpacity * 100)}%</span>
+                  </div>
+                  <div className="relative h-5 rounded-lg overflow-hidden border border-neutral-200 mb-2"
+                    style={{
+                      backgroundImage: `
+                        linear-gradient(45deg, #ddd 25%, transparent 25%),
+                        linear-gradient(-45deg, #ddd 25%, transparent 25%),
+                        linear-gradient(45deg, transparent 75%, #ddd 75%),
+                        linear-gradient(-45deg, transparent 75%, #ddd 75%),
+                        linear-gradient(to right, transparent, ${activeColor})
+                      `,
+                      backgroundSize: '8px 8px, 8px 8px, 8px 8px, 8px 8px, 100% 100%',
+                      backgroundPosition: '0 0, 0 4px, 4px -4px, -4px 0, 0 0',
+                    }}
+                  >
+                    <input
+                      type="range" min={0} max={100} value={Math.round(activeOpacity * 100)}
+                      onChange={e => setActiveOpacity(Number(e.target.value) / 100)}
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                    />
+                    <div
+                      className="absolute top-1/2 -translate-y-1/2 w-4 h-4 rounded-full bg-white border-2 border-neutral-400 shadow-md pointer-events-none"
+                      style={{ left: `calc(${activeOpacity * 100}% - 8px)` }}
+                    />
+                  </div>
+                  <div className="flex gap-1">
+                    {[25, 50, 75, 100].map(v => (
+                      <button
+                        key={v}
+                        onClick={() => setActiveOpacity(v / 100)}
+                        className={`flex-1 py-1 text-[9px] font-mono rounded-md transition-all ${
+                          Math.round(activeOpacity * 100) === v ? 'bg-neutral-900 text-white' : 'bg-neutral-100 hover:bg-neutral-200 text-neutral-600'
+                        }`}
+                      >{v}%</button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </>,
+            document.body
+          )}
+
+          {showStickerMenu && stickerMenuPos && createPortal(
+            <>
+              <div
+                className="fixed inset-0 z-[90]"
+                onClick={() => setShowStickerMenu(false)}
+              />
+              <div
+                ref={stickerMenuRef}
+                className="fixed z-[91] bg-white rounded-xl shadow-2xl border border-black/5 p-3 flex flex-col gap-1 w-60 items-start"
+                style={{
+                  top: stickerMenuPos.top,
+                  left: stickerMenuPos.left,
+                  animation: 'fadeSlideIn 0.15s ease',
+                }}
+                onClick={e => e.stopPropagation()}
+              >
+                <div className="px-1 py-0.5 text-[9px] font-mono uppercase text-neutral-400 tracking-widest w-full border-b border-black/5 mb-1">Semantic Tags</div>
+                {[
+                  { type: 'heart',  Icon: Heart,       label: 'Reinforce',   desc: 'More like this',        color: 'text-red-500' },
+                  { type: 'cross',  Icon: Ban,         label: 'Avoid',       desc: 'Less like this',        color: 'text-red-600' },
+                  { type: 'roller', Icon: PaintRoller, label: 'Style Only',  desc: 'Rendering & Color',     color: 'text-blue-600' },
+                  { type: 'cube',   Icon: Box,         label: 'Object Lock', desc: 'Keep character/object', color: 'text-purple-600' },
+                ].map(s => (
+                  <div key={s.type} draggable
+                    onDragStart={(e) => handleStickerDragStart(e, s.type as StickerType)}
+                    onDragEnd={handleStickerDragEnd}
+                    className="w-full flex items-center gap-3 p-2 hover:bg-neutral-50 rounded-lg cursor-grab active:cursor-grabbing group transition-colors"
+                  >
+                    <div className="w-7 h-7 flex items-center justify-center bg-white border border-neutral-100 rounded-md shadow-sm group-hover:shadow-md transition-all">
+                      <s.Icon size={14} className={s.color} />
+                    </div>
+                    <div className="flex flex-col">
+                      <span className="text-xs font-medium text-neutral-800">{s.label}</span>
+                      <span className="text-[10px] text-neutral-500">{s.desc}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>,
+            document.body
+          )}
+
+          <div className="absolute bottom-6 left-6 z-40 pointer-events-none">
+            <div className="font-mono text-[10px] uppercase tracking-widest text-neutral-400 select-none flex gap-6 bg-white/50 backdrop-blur-sm p-2 rounded-full px-4 border border-white/20">
+                 <span className="flex items-center gap-2"><span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-pulse"></span>BRAIN: GEMINI 3 PRO</span>
+                <span className="text-black font-bold">PROJECT: {(context?.projectName || 'UNTITLED').toUpperCase()}</span>
+                 <span>OBJS: {(canvasElements || []).length}</span>
+                 <span>TAGS: {(canvasElements || []).filter(e => e.sticker).length}</span>
+                 <span>POS: X:{Math.round((canvasElements || [])[0]?.x || 0)} Y:{Math.round((canvasElements || [])[0]?.y || 0)}</span>
+            </div>
+          </div>
+
+          {/* Layer 3: Floating Chat Panel (Right) - Collapsible */}
+          <div 
+            className={`absolute right-6 top-20 z-50 flex flex-col items-end transition-all duration-500 ease-[cubic-bezier(0.19,1,0.22,1)] ${isChatOpen ? 'w-[340px]' : 'w-[160px]'}`}
+            style={{ height: isChatOpen ? 'calc(100vh - 120px)' : '48px' }}
+          >
+              {/* 
+                Optimized Animation Container:
+                - Always rounded-3xl (24px radius). At height=48px, this creates a perfect pill.
+                - Eliminates border-radius morphing artifacts.
+              */}
+              <div className={`w-full h-full shadow-2xl bg-white overflow-hidden ring-1 ring-black/5 rounded-3xl`}>
+                 <ChatPanel 
+                     messages={messages} 
+                     onSendMessage={handleSendMessage} 
+                     onClearChat={handleClearChat}
+                     processingStatus={processingStatus}
+                     onPreview={handlePreview}
+                     isOpen={isChatOpen}
+                     onToggle={() => setIsChatOpen(!isChatOpen)}
+                 />
+              </div>
+          </div>
+
+          {/* Layer 4: Full Screen Lightbox (Root Level) */}
+          {previewItem && (
+            <div 
+                className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 backdrop-blur-sm p-8 animate-in fade-in duration-200"
+                onClick={() => setPreviewItem(null)}
+            >
+                <button 
+                    onClick={() => setPreviewItem(null)}
+                    className="absolute top-6 right-6 text-white/50 hover:text-white transition-colors p-2 hover:bg-white/10 rounded-full"
+                >
+                    <X size={24} />
+                </button>
+
+                <div 
+                    className="relative flex flex-col items-center max-w-full max-h-full"
+                    onClick={e => e.stopPropagation()}
+                >
+                    <img 
+                        src={`data:image/png;base64,${previewItem.base64}`} 
+                        alt="Full Preview" 
+                        className="max-w-[90vw] max-h-[85vh] object-contain shadow-2xl rounded-sm border border-white/10" 
+                    />
+                    
+                    <button 
+                        onClick={() => handleDownloadArtifact(previewItem.base64, previewItem.id)}
+                        className="mt-6 flex items-center gap-2 bg-white text-black px-6 py-3 text-xs font-mono uppercase tracking-widest hover:bg-neutral-200 transition-colors rounded-full"
+                    >
+                        <Download size={14} /> Download Asset
+                    </button>
+                </div>
+            </div>
+          )}
+
+          <ProfileModal
+            user={authUser}
+            open={showProfileModal}
+            onClose={() => setShowProfileModal(false)}
+            onSignOut={handleSignOut}
+          />
+        </div>
+        )
+      } />
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
   );
 };
 
