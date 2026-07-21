@@ -517,6 +517,11 @@ app.post('/api/suggest-vibes', verifyRequestUser, async (req, res) => {
     return res.status(400).json({ error: "Missing required parameters" });
   }
 
+  if (roomType.toLowerCase().includes('living room') || roomType.toLowerCase().includes('demo')) {
+    // Return a mocked vibe without calling the Gemini API for the demo
+    return res.json({ vibes: "Modern minimalist and cozy" });
+  }
+
   const prompt = `
     Context: We are designing a "${roomType}" (Type: ${projectType || 'general'}).
     Constraints / Existing: "${existingFurniture || 'None'}".
@@ -546,6 +551,45 @@ app.post('/api/agent-turn', verifyRequestUser, async (req, res) => {
   const { context, canvasBase64, userMessage, history, stickerContext } = req.body;
   if (!context || !canvasBase64 || !userMessage) {
     return res.status(400).json({ error: "Missing required fields: context, canvasBase64, userMessage" });
+  }
+
+  if (context.projectName && context.projectName.toLowerCase() === 'living room design') {
+    const lowerMsg = userMessage.toLowerCase();
+    let imageFileName = '';
+    let responseText = '';
+    
+    const pastAssistantCount = history.filter((m: any) => m.role === 'assistant').length;
+    
+    if (lowerMsg.includes('sofa') || pastAssistantCount === 2) {
+      imageFileName = 'changed-sofa-color(2).jpeg';
+      responseText = "I've updated the sofa to a rich, warm tone. This adds a nice pop of color and brings a cozy feel to the room.";
+    } else if (lowerMsg.includes('carpet') || pastAssistantCount === 3) {
+      imageFileName = 'added-carpet(3).jpeg';
+      responseText = "A textured area rug has been added under the seating arrangement to ground the space and add more warmth.";
+    } else if (lowerMsg.includes('painting') || lowerMsg.includes('paintings') || lowerMsg.includes('remove') || pastAssistantCount === 4) {
+      imageFileName = 'removed-paintings(4).jpeg';
+      responseText = "I've cleared the wall art to give the room a more minimalist, uncluttered look as requested.";
+    } else if (lowerMsg.includes('fan') || pastAssistantCount >= 5) {
+      imageFileName = 'changed-fan(5).jpeg';
+      responseText = "I replaced the ceiling fan with a sleek, modern light fixture to elevate the overall aesthetic of the space.";
+    } else {
+      imageFileName = 'designed(1).jpeg';
+      responseText = "I've transformed the space into a modern, cohesive living area with a clean layout and contemporary furniture to suit your goals.";
+    }
+    
+    return res.json({
+      text: responseText,
+      toolCalls: [{
+        name: "generate_image",
+        args: {
+          analysis: responseText,
+          prompt: `HARDCODED_DEMO:${imageFileName}`,
+          mode: "EDIT_EXISTING",
+          aspectRatio: "1:1"
+        }
+      }],
+      sourceUrls: []
+    });
   }
 
   try {
@@ -677,6 +721,21 @@ app.post('/api/generate-artifact', verifyRequestUser, async (req, res) => {
   const { technicalPrompt, agentAnalysis, context, referenceImage, stickerContext } = req.body;
   if (!technicalPrompt || !context) {
     return res.status(400).json({ error: "Missing required fields: technicalPrompt, context" });
+  }
+
+  if (technicalPrompt.startsWith('HARDCODED_DEMO:')) {
+    const fileName = technicalPrompt.split(':')[1];
+    const filePath = path.join(process.cwd(), 'assets', fileName);
+    try {
+      const ext = path.extname(fileName).slice(1);
+      const mime = ext === 'jpg' || ext === 'jpeg' ? 'jpeg' : 'png';
+      const fs = await import('fs');
+      const base64 = fs.readFileSync(filePath, 'base64');
+      return res.json({ image: base64 });
+    } catch (err) {
+      console.error('Failed to read hardcoded image', err);
+      return res.status(500).json({ error: "Failed to read hardcoded image" });
+    }
   }
 
   try {
